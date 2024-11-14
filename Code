@@ -1,0 +1,13 @@
+The Intelligent Vehicle Navigation project by Basilu Liyanage is an advanced autonomous navigation system that enables a vehicle to navigate through its environment without human intervention.
+The system leverages cutting-edge technologies like machine learning, sensor fusion, and real-time data processing to make intelligent driving decisions.
+
+
+Key features of the project include:
+
+Obstacle Detection and Avoidance: It utilizes sensors like LIDAR, cameras, and ultrasonic sensors to detect obstacles in the vehicle's path, enabling it to avoid collisions.
+
+Path Planning: The vehicle computes optimal routes to its destination using algorithms such as A*.
+
+Real-time Decision Making: It makes real-time decisions based on environmental factors and sensor data, adjusting the vehicle's behavior accordingly.
+
+User Interface: The project provides a user-friendly interface for monitoring and controlling the vehicle's operations.

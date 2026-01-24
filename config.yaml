@@ -1,0 +1,30 @@
+# Training Configuration
+training:
+  total_episodes: 200
+  steps_per_episode: 300
+  batch_size: 128
+  checkpoint_interval: 20
+  
+# Agent Configuration
+agent:
+  learning_rate: 0.0003
+  buffer_size: 20000
+  hidden_dim: 128
+  gamma: 0.99
+  tau: 0.005
+  
+# Environment Configuration
+environment:
+  max_steps: 500
+  lidar_noise: 0.05
+  # Reward weights
+  forward_weight: 2.0
+  steering_penalty: 0.05
+  crash_penalty: 1.0
+  speed_bonus: 0.1
+  
+# Paths
+paths:
+  checkpoints: "AI/checkpoints"
+  logs: "Data/logs"
+  datasets: "Data/datasets"

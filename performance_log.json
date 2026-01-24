@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp": 1769175408.5645955,
+    "event": "emergency_shutdown",
+    "state": {
+      "eye_position": 31.5,
+      "driver_position": 90.0,
+      "motor_speed": 60,
+      "lidar_distance": 1200,
+      "scan_count": 5,
+      "emergency_flag": false,
+      "timestamp": 1769175402.0619776
+    },
+    "cycle": 1
+  },
+  {
+    "timestamp": 1769175414.8187585,
+    "event": "emergency_shutdown",
+    "state": {
+      "eye_position": 31.5,
+      "driver_position": 90.0,
+      "motor_speed": 60,
+      "lidar_distance": 1200,
+      "scan_count": 5,
+      "emergency_flag": false,
+      "timestamp": 1769175402.0619776
+    },
+    "cycle": 1
+  }
+]

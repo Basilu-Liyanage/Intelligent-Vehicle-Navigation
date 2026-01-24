@@ -1,0 +1,5 @@
+{"timestamp": 1769178180.148819, "event": "navigation_complete", "state": "READY", "cycle_count": 17, "emergency_count": 1, "distance_traveled": 6.961199999999996}
+{"timestamp": 1769178195.573142, "event": "emergency_shutdown", "state": "EMERGENCY_STOP", "cycle_count": 17, "emergency_count": 2, "distance_traveled": 6.961199999999996}
+{"timestamp": 1769179161.9768062, "event": "navigation_complete", "state": "READY", "cycle_count": 11, "emergency_count": 1, "distance_traveled": 4.666}
+{"timestamp": 1769179169.7877195, "event": "system_shutdown", "state": "READY", "cycle_count": 11, "emergency_count": 1, "distance_traveled": 4.666}
+{"timestamp": 1769179320.4428027, "event": "system_shutdown", "state": "READY", "cycle_count": 0, "emergency_count": 0, "distance_traveled": 0.0}

@@ -58,7 +58,7 @@ class TFLuna:
                     self.last_valid_distance = distance_m
                     return distance_m 
             
-            time.sleep(0.001)
+            time.sleep(0.1)
         
         # Timeout - return last valid reading
         return self.last_valid_distance if self.last_valid_distance > 0 else 0.0

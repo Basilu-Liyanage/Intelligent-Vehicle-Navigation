@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-CAR CONTROL SERVER - Run on LAPTOP
-FIXED: Steering doesn't change speed
+CAR CONTROL SERVER - WINDOWS VERSION
+Steering and throttle are INDEPENDENT
+No special Linux keyboard modules needed
 """
 
 import socket
 import json
 import time
 import sys
-import tty
-import termios
-import select
+import msvcrt  # Windows keyboard library
 
 class CarServer:
     def __init__(self, pi_ip='192.168.1.100', port=9999):
@@ -19,7 +18,7 @@ class CarServer:
         self.socket = None
         self.connected = False
         
-        # Current state tracking
+        # Current state
         self.current_speed = 0
         self.current_steering = 90
         
@@ -32,9 +31,10 @@ class CarServer:
             self.connected = True
             print(f"✅ Connected to {self.pi_ip}:{self.port}")
             
-            # Send initial state
+            # Initialize car
             self.send_command('steer', 90)
             self.send_command('throttle', 0)
+            time.sleep(0.5)
             
             return True
         except Exception as e:
@@ -58,10 +58,10 @@ class CarServer:
             self.connected = False
             return f"Error: {e}"
     
-    def control_loop(self):
-        """Control loop - SEPARATE steering and throttle"""
+    def windows_control(self):
+        """Windows keyboard control (no Linux dependencies)"""
         print("\n" + "="*50)
-        print("CAR CONTROL - WSAD (Fixed)")
+        print("CAR CONTROL - WINDOWS VERSION")
         print("="*50)
         print("Controls:")
         print("  W - Increase speed (+2%)")
@@ -71,27 +71,35 @@ class CarServer:
         print("  SPACE - Stop (0% speed)")
         print("  C - Center steering (90°)")
         print("  E - Set 20% speed")
-        print("  R - Reset to 0%")
+        print("  R - Reset to 0% speed")
         print("  X - Emergency stop")
         print("  Q - Quit")
         print("="*50)
-        print("Important: Steering WON'T change speed!")
+        print("Steering and speed are INDEPENDENT")
+        print("Press keys (no Enter needed)")
         print("="*50)
         
-        # Setup keyboard
-        old_settings = termios.tcgetattr(sys.stdin)
+        print(f"\n🚗 Ready! Current: Speed={self.current_speed:+3d}%, Steering={self.current_steering}°")
+        print("Tap keys to control...")
+        
+        last_key_time = 0
+        key_repeat_delay = 0.1  # 100ms between repeated key presses
         
         try:
-            tty.setraw(sys.stdin.fileno())
-            
-            print(f"\n🚗 Ready! Current: Speed={self.current_speed:+3d}%, Steering={self.current_steering}°")
-            print("Tap W/S for speed, A/D for steering (independent)")
-            
             while True:
-                if select.select([sys.stdin], [], [], 0.05)[0]:
-                    key = sys.stdin.read(1).lower()
+                # Check if key is pressed (Windows specific)
+                if msvcrt.kbhit():
+                    key = msvcrt.getch().decode('utf-8').lower()
+                    current_time = time.time()
                     
-                    # SPEED CONTROL ONLY
+                    # Prevent too fast key repeats
+                    if current_time - last_key_time < key_repeat_delay:
+                        time.sleep(0.01)
+                        continue
+                    
+                    last_key_time = current_time
+                    
+                    # SPEED CONTROL
                     if key == 'w':  # Increase speed
                         self.current_speed = min(100, self.current_speed + 2)
                         response = self.send_command('throttle', self.current_speed)
@@ -101,8 +109,8 @@ class CarServer:
                         self.current_speed = max(-100, self.current_speed - 2)
                         response = self.send_command('throttle', self.current_speed)
                         print(f"\n⬇️  Speed: {self.current_speed:+3d}%")
-                        
-                    # STEERING CONTROL ONLY (doesn't affect speed)
+                    
+                    # STEERING CONTROL (independent)
                     elif key == 'a':  # Turn left
                         self.current_steering = max(50, self.current_steering - 2)
                         response = self.send_command('steer', self.current_steering)
@@ -114,7 +122,7 @@ class CarServer:
                         print(f"\n↗️  Steering: {self.current_steering:3d}°")
                     
                     # OTHER CONTROLS
-                    elif key == ' ':  # Stop
+                    elif key == ' ':  # Space bar - Stop
                         self.current_speed = 0
                         response = self.send_command('throttle', 0)
                         print(f"\n🛑 Stop! Speed: 0%")
@@ -134,6 +142,7 @@ class CarServer:
                         self.current_steering = 90
                         self.send_command('throttle', 0)
                         self.send_command('steer', 90)
+                        time.sleep(0.1)
                         print(f"\n🔄 Reset: Speed=0%, Steering=90°")
                         
                     elif key == 'x':  # Emergency stop
@@ -146,7 +155,7 @@ class CarServer:
                         print("\n🛑 Quitting...")
                         break
                     
-                    # Show response from Pi
+                    # Show response
                     try:
                         resp_data = json.loads(response)
                         if 'message' in resp_data:
@@ -154,12 +163,12 @@ class CarServer:
                     except:
                         pass
                 
+                # Small sleep to prevent CPU overload
                 time.sleep(0.01)
                 
         except KeyboardInterrupt:
             print("\n🛑 Interrupted")
         finally:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
             self.close()
     
     def close(self):
@@ -168,13 +177,49 @@ class CarServer:
             self.socket.close()
             print("🔌 Connection closed")
 
+def get_pi_ip():
+    """Ask user for Pi IP"""
+    print("\n" + "="*50)
+    print("CAR CONTROL SERVER SETUP")
+    print("="*50)
+    
+    # Try to auto-detect common Pi IPs
+    common_ips = ['192.168.1.100', '192.168.1.101', '192.168.0.100', '192.168.0.101']
+    
+    print("Common Raspberry Pi IP addresses:")
+    for i, ip in enumerate(common_ips, 1):
+        print(f"  {i}. {ip}")
+    print(f"  {len(common_ips)+1}. Enter custom IP")
+    
+    choice = input(f"\nSelect IP or enter custom: ").strip()
+    
+    if choice.isdigit() and 1 <= int(choice) <= len(common_ips):
+        return common_ips[int(choice) - 1]
+    elif choice.isdigit() and int(choice) == len(common_ips) + 1:
+        custom_ip = input("Enter Pi's IP address: ").strip()
+        return custom_ip
+    else:
+        # Assume it's a custom IP
+        return choice if '.' in choice else '192.168.1.100'
+
 if __name__ == "__main__":
-    PI_IP = '192.168.1.7'  # ← CHANGE TO YOUR PI's IP!
+    # Get Pi IP
+    PI_IP = get_pi_ip()
+    
+    print(f"\n🔗 Connecting to {PI_IP}:9999")
+    print("Make sure Raspberry Pi is running car_client.py")
+    print("-" * 50)
     
     server = CarServer(pi_ip=PI_IP, port=9999)
     
     if server.connect():
-        server.control_loop()
+        server.windows_control()
     else:
         print(f"\n❌ Couldn't connect to {PI_IP}:9999")
-        print("Check Pi IP and run car_client.py on Pi")
+        print("\nTroubleshooting:")
+        print("1. Check Pi is on same network")
+        print("2. Run car_client.py on Pi")
+        print("3. Check Windows Firewall allows connection")
+        print("4. Verify IP address is correct")
+        print("\nPress Enter to exit...")
+        input()

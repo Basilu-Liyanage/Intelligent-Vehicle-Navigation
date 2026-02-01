@@ -34,8 +34,8 @@ class FixedCarClient:
         # Control settings
         self.MAX_THROTTLE = 100
         self.MIN_THROTTLE = -100
-        self.MIN_STEERING = 50
-        self.MAX_STEERING = 130
+        self.MIN_STEERING = 0
+        self.MAX_STEERING = 180
         
         # Hardware
         if HARDWARE:
@@ -57,9 +57,9 @@ class FixedCarClient:
         if abs(self.target_throttle - self.throttle) < 0.5:
             self.throttle = self.target_throttle
         elif self.target_throttle > self.throttle:
-            self.throttle += 0.5  # Slow smoothing
+            self.throttle += 2  # Slow smoothing
         else:
-            self.throttle -= 0.5
+            self.throttle -= 2
         
         # Clamp throttle
         self.throttle = max(self.MIN_THROTTLE, min(self.MAX_THROTTLE, self.throttle))

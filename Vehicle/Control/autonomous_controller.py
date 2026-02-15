@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-INDUSTRIAL-PURE AI TESLA CONTROLLER
+INDUSTRIAL-PURE AI TESLA CONTROLLER - FIXED VERSION
 - Throttle AI only
 - Rule-based steering fully uses CarEye async scan
 - Smooth acceleration/deceleration
 - Failsafe emergency stops
 - High-frequency loop (~10Hz)
 - Thread-safe and robust
+- FIXED: Maintains motion during turns
 """
 
 import time
@@ -136,6 +137,8 @@ class PureAIController:
                 if best_distance is not None and best_distance > 0:
                     driver_angle = self.eye_to_driver_accurate(best_angle)
                     with self.scan_lock:
+                        # FIXED: Update eye_position for AI state
+                        self.eye_position = best_angle
                         self.target_driver_angle = driver_angle
                         self.is_turning = True
                         self.turn_start_time = time.time()
@@ -162,105 +165,212 @@ class PureAIController:
 
     # --------------------- AI THROTTLE ONLY ---------------------------------
     def create_ai_state(self, distance_cm):
+        """Create state vector for AI with all dynamic values"""
         state = np.zeros(6, dtype=np.float32)
-        state[0] = min(distance_cm / 200.0, 1.0)
-        state[1] = max(0, self.current_speed) / 100.0
-        state[2] = (self.driver_position - DRIVER_CENTER) / 40.0
-        state[3] = (self.eye_position - EYE_CENTER) / ((EYE_MAX - EYE_MIN)/2)
-        state[4] = np.sin(self.cycle_count * 0.1)
-        state[5] = 1.0 if distance_cm < 30 else 0.0
+        state[0] = min(distance_cm / 200.0, 1.0)  # Normalized distance
+        state[1] = max(0, self.current_speed) / 100.0  # Normalized speed
+        state[2] = (self.driver_position - DRIVER_CENTER) / 40.0  # Normalized steering
+        state[3] = (self.eye_position - EYE_CENTER) / ((EYE_MAX - EYE_MIN)/2)  # FIXED: Now updates!
+        state[4] = np.sin(self.cycle_count * 0.1)  # Time feature
+        state[5] = 1.0 if distance_cm < 30 else 0.0  # Emergency flag
         return state
 
     def get_ai_throttle(self, distance_cm):
-        if distance_cm < 20:  # emergency stop
+        """Get throttle from AI with safety overrides"""
+        # Emergency stop
+        if distance_cm < 20:
             return 0, f"⚠️ EMERGENCY STOP: {distance_cm:.1f}cm"
+        
+        # Fallback if no AI
         if self.ai is None:
-            return 30 if distance_cm > 50 else 10, "❌ NO AI: Fallback"
+            base_speed = 30 if distance_cm > 50 else 15
+            return base_speed, "❌ NO AI: Fallback"
+        
+        # Get AI prediction
         state = self.create_ai_state(distance_cm)
         with torch.no_grad():
             action = self.ai(torch.FloatTensor(state).unsqueeze(0), deterministic=True)
-        throttle = max(0, action.squeeze(0).numpy()[0])
-        target_speed = max(0, min(80, throttle*100))
-        reason = f"🤖 AI DECISION: Speed {target_speed:.0f}%"
+        
+        # Extract throttle from first output dimension
+        raw_throttle = action.squeeze(0).numpy()[0]
+        
+        # FIXED: Ensure minimum throttle during normal operation
+        if distance_cm > 30:  # Not emergency
+            # Scale from [-1,1] to [0.15, 0.8] for 15-80% speed
+            throttle = (raw_throttle + 1) / 2 * 0.65 + 0.15
+            throttle = np.clip(throttle, 0.15, 0.8)
+        else:
+            # Emergency zone - allow lower speeds
+            throttle = max(0, raw_throttle)
+            throttle = np.clip(throttle, 0, 0.5)
+        
+        # FIXED: Add minimum speed during sharp turns
+        steering_angle = self.driver_position
+        if abs(steering_angle - DRIVER_CENTER) > 30:  # Sharp turn
+            throttle = max(throttle, 0.20)  # At least 20% speed
+            turn_msg = " (turn boost)"
+        else:
+            turn_msg = ""
+        
+        target_speed = throttle * 100
+        reason = f"🤖 AI DECISION: Speed {target_speed:.0f}%{turn_msg}"
+        
+        # Debug print (remove in production)
+        if self.cycle_count % 10 == 0:
+            print(f"\nDEBUG - raw: {raw_throttle:.3f}, final: {throttle:.3f}, speed: {target_speed:.0f}%")
+            print(f"DEBUG - dist:{state[0]:.2f} spd:{state[1]:.2f} str:{state[2]:.2f} eye:{state[3]:.2f}")
+        
         return target_speed, reason
 
     # --------------------- MOTOR CONTROL -----------------------------------
-    def apply_motor_control(self, target_speed):
-        # Smooth acceleration / deceleration
+    def apply_motor_control(self, target_speed, distance_cm):
+        """Apply smooth motor control with emergency stops"""
+        # Emergency override
+        if distance_cm < 20:
+            self.motor.stop()
+            self.pca.center_all()
+            self.current_speed = 0
+            return 0
+        
+        # Smooth acceleration/deceleration
         speed_diff = target_speed - self.current_speed
         if speed_diff > 0:
-            change = min(5, speed_diff)
+            change = min(5, speed_diff)  # Accelerate smoothly
         else:
-            change = max(-8, speed_diff)
-        new_speed = max(0, min(75, self.current_speed + change))
-
-        if new_speed < 5:
-            self.motor.stop()
+            change = max(-8, speed_diff)  # Decelerate faster
+        
+        new_speed = self.current_speed + change
+        
+        # FIXED: Lower stop threshold and ensure minimum speed
+        if new_speed < 2:  # Changed from 5 to 2
+            # Only stop if really necessary
+            if distance_cm < 25 or target_speed < 1:
+                self.motor.stop()
+                self.pca.center_all()
+                new_speed = 0
+            else:
+                # Maintain minimum crawl speed
+                new_speed = 8
+                self.motor.move_forward(int(new_speed))
         else:
+            # Normal operation
+            new_speed = np.clip(new_speed, 0, 75)
             self.motor.move_forward(int(new_speed))
             self.MotorDirection = MotorDirection.FORWARD
-
+        
         self.current_speed = new_speed
         self.speed_history.append(new_speed)
         return new_speed
 
     # --------------------- RULE-BASED STEERING -----------------------------
     def apply_rule_steering(self, distance_cm):
+        """Apply steering based on CarEye scan results"""
         with self.scan_lock:
             angle = getattr(self, 'target_driver_angle', DRIVER_CENTER)
-        # Fallback: if obstacle extremely close
-        if distance_cm < 25:
-            angle += 25 if angle < DRIVER_CENTER else -25
+        
+        # FIXED: Better obstacle avoidance steering
+        if distance_cm < 25:  # Very close obstacle
+            # Steer more aggressively away
+            if angle >= DRIVER_CENTER:
+                angle = min(angle + 15, 145)  # Turn right more
+            else:
+                angle = max(angle - 15, 35)   # Turn left more
+        elif distance_cm < 40:  # Close obstacle
+            # Gentle steering adjustment
+            if angle >= DRIVER_CENTER:
+                angle = min(angle + 8, 140)
+            else:
+                angle = max(angle - 8, 40)
+        
+        # Apply steering
         self.pca.driver.set_angle(angle)
         self.driver_position = angle
         return angle
 
     # --------------------- HELPERS -----------------------------------------
-    def eye_to_driver_accurate(self, eye_angle: float) -> float:
-        scale = (130-50)/(46-15)
-        return 50 + (eye_angle-15)*scale
+    def eye_to_driver_accurate(self, eye: float) -> float:
+        driver = 90 - (eye * 0.9)
+        
+        # Clamp safe servo range
+        driver = max(35, min(145, driver))
+        
+        # Deadzone near center (prevents micro jitter)
+        if abs(driver - 90) < 4:
+            driver = 90
+        
+        return driver
 
     def calculate_turn_duration(self, driver_angle: float, speed: float) -> float:
+        """Calculate how long to maintain turn"""
         angle_diff = abs(driver_angle - DRIVER_CENTER)
-        base = 0.5 if angle_diff < 10 else 1.5 if angle_diff < 25 else 2.5 if angle_diff < 40 else 3.5
-        speed_factor = max(20, min(50, speed))/35.0
+        if angle_diff < 10:
+            base = 0.5
+            
+        elif angle_diff < 25:
+            base = 1.5
+        elif angle_diff < 40:
+            base = 2.5
+        else:
+            base = 3.5
+        
+        speed_factor = max(20, min(50, speed)) / 35.0
         return base * speed_factor
 
     # --------------------- DISPLAY -----------------------------------------
     def display_status(self, distance_cm, speed, steering, reason):
-        speed_icon = "🚗" if speed>30 else "🐢" if speed>10 else "⏹️"
-        dist_icon = "📏" if distance_cm<100 else "🟢"
-        steer_icon = "↖️" if steering<80 else "↗️" if steering>100 else "⬆️"
-        return (f"\033[2K\033[1G[{self.cycle_count:04d}] "
-                f"{dist_icon}{distance_cm:5.1f}cm "
-                f"{speed_icon}{speed:3.0f}% "
-                f"🧭{steer_icon}{steering:3.0f}° "
-                f"👁️{self.eye_position:4.1f} "
-                f"{reason}")
+        """Create colorful status display"""
+        speed_icon = "🚗" if speed > 30 else "🐢" if speed > 10 else "⏹️"
+        dist_icon = "⚠️" if distance_cm < 30 else "📏" if distance_cm < 60 else "🟢"
+        steer_icon = "↖️" if steering < 80 else "↗️" if steering > 100 else "⬆️"
+        
+        status = (f"\033[2K\033[1G[{self.cycle_count:04d}] "
+                 f"{dist_icon}{distance_cm:5.1f}cm "
+                 f"{speed_icon}{speed:3.0f}% "
+                 f"{steer_icon}{steering:3.0f}° "
+                 f"👁️{self.eye_position:4.1f} "
+                 f"{reason}")
+        
+        # Color code based on distance
+        if distance_cm < 30:
+            return f"\033[1;31m{status}\033[0m"  # Red for danger
+        elif distance_cm < 60:
+            return f"\033[1;33m{status}\033[0m"  # Yellow for caution
+        else:
+            return f"\033[1;32m{status}\033[0m"  # Green for safe
 
     # --------------------- DRIVE LOOP -------------------------------------
     def drive(self):
+        """Main autonomous driving loop"""
         print("\033[1;36m🚀 STARTING INDUSTRIAL-PURE AI AUTONOMOUS MODE\033[0m")
+        print("\033[1;33mPress Ctrl+C to stop\033[0m\n")
+        
         try:
             while self.running:
                 self.cycle_count += 1
                 start_time = time.time()
 
+                # Get sensor data
                 distance_cm = self.get_lidar_distance()
+                
+                # Get AI throttle
                 target_speed, reason = self.get_ai_throttle(distance_cm)
-                actual_speed = self.apply_motor_control(target_speed)
+                
+                # Apply motor control with distance override
+                actual_speed = self.apply_motor_control(target_speed, distance_cm)
 
+                # Apply steering
                 steering_angle = self.apply_rule_steering(distance_cm)
 
                 # Reset async turn if done
                 if self.is_turning and (time.time() - self.turn_start_time) >= self.turn_duration:
                     self.is_turning = False
 
-                # Display status
+                # Display status (every 3 cycles for readability)
                 if self.cycle_count % 3 == 0:
-                    print(self.display_status(distance_cm, actual_speed, self.driver_position, reason), end="\r")
+                    print(self.display_status(distance_cm, actual_speed, 
+                                            self.driver_position, reason), end="\r")
 
-                # Loop at ~10Hz
+                # Maintain ~10Hz loop
                 cycle_time = time.time() - start_time
                 time.sleep(max(0, 0.1 - cycle_time))
 
@@ -271,15 +381,18 @@ class PureAIController:
 
     # --------------------- SAFE SHUTDOWN ----------------------------------
     def shutdown(self):
+        """Safe system shutdown"""
+        print("\n\033[1;36m🛑 Shutting down...\033[0m")
         self.running = False
         self.motor.stop()
         self.pca.center_all()
         time.sleep(0.2)
-        print("\n\033[1;32m✅ SYSTEM SAFE - Goodbye!\033[0m")
+        print("\033[1;32m✅ SYSTEM SAFE - Goodbye!\033[0m")
 
 
 # ========================= MAIN ==========================================
 def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
     print("\n\033[1;31m🛑 EMERGENCY STOP SIGNAL RECEIVED\033[0m")
     sys.exit(0)
 

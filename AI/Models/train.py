@@ -1,576 +1,653 @@
 #!/usr/bin/env python3
 """
-<<<<<<< HEAD
-Industry-level SAC trainer for wheelchair/car with 7 distance sensors,
-speed (0-100%), and steering angle (0-50°).
-=======
-FIXED TRAINING ENVIRONMENT - 6D STATE VERSION
-Trains AI with 6D state vector matching your controller
->>>>>>> ece7e52 (Working Codes with Pending Speed Improvement)
+REVERSE-TRAINING ENVIRONMENT - MULTITHREADED ACTIVE LEARNING VERSION
+Multi-threaded training with proper JSON serialization
 """
 
 import numpy as np
 import torch
-<<<<<<< HEAD
-import torch.nn as nn
-import torch.optim as optim
-import os
-from collections import deque
 import random
-
-# ----------------------------
-# SAC Agent
-# ----------------------------
-class SACAgent:
-    def __init__(self, state_dim=9, action_dim=2, hidden_dim=128, lr=3e-4):
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-
-        # Actor: outputs mean + log_std
-        self.actor = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim * 2)
-        )
-
-        # Critic networks
-        self.critic1 = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-        self.critic2 = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-        # Target critics
-        self.target_critic1 = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-        self.target_critic2 = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-        self.target_critic1.load_state_dict(self.critic1.state_dict())
-        self.target_critic2.load_state_dict(self.critic2.state_dict())
-
-        # Optimizers
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
-        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=lr)
-        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=lr)
-
-        # Replay buffer
-        self.replay_buffer = deque(maxlen=50000)
-        self.batch_size = 128
-        self.gamma = 0.99
-        self.tau = 0.005
-
-    def get_action(self, state, deterministic=False, noise=0.1):
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        with torch.no_grad():
-            out = self.actor(state_tensor)
-            mean = out[:, :self.action_dim]
-            log_std = out[:, self.action_dim:]
-            std = torch.exp(log_std)
-            if deterministic:
-                action = torch.tanh(mean)
-            else:
-                normal = torch.distributions.Normal(mean, std)
-                action = torch.tanh(normal.rsample())
-                action += torch.randn_like(action) * noise
-                action = torch.clamp(action, -1, 1)
-        return action.squeeze().cpu().numpy()
-
-    def store(self, state, action, reward, next_state, done):
-        self.replay_buffer.append((state, action, reward, next_state, done))
-
-    def update(self):
-        if len(self.replay_buffer) < self.batch_size:
-            return 0,0,0
-
-        batch = random.sample(self.replay_buffer, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        states = torch.FloatTensor(states)
-        actions = torch.FloatTensor(actions)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1)
-        next_states = torch.FloatTensor(next_states)
-        dones = torch.FloatTensor(dones).unsqueeze(1)
-
-        # Target Q
-        with torch.no_grad():
-            next_out = self.actor(next_states)
-            mean = next_out[:, :self.action_dim]
-            log_std = next_out[:, self.action_dim:]
-            std = torch.exp(log_std)
-            normal = torch.distributions.Normal(mean, std)
-            next_actions = torch.tanh(normal.rsample())
-
-            target_q1 = self.target_critic1(torch.cat([next_states, next_actions],1))
-            target_q2 = self.target_critic2(torch.cat([next_states, next_actions],1))
-            target_q = torch.min(target_q1, target_q2)
-            target_value = rewards + self.gamma * (1 - dones) * target_q
-
-        # Critic losses
-        q1 = self.critic1(torch.cat([states, actions],1))
-        q2 = self.critic2(torch.cat([states, actions],1))
-        critic1_loss = nn.MSELoss()(q1, target_value)
-        critic2_loss = nn.MSELoss()(q2, target_value)
-
-        self.critic1_optimizer.zero_grad()
-        critic1_loss.backward()
-        self.critic1_optimizer.step()
-
-        self.critic2_optimizer.zero_grad()
-        critic2_loss.backward()
-        self.critic2_optimizer.step()
-
-        # Actor loss
-        out = self.actor(states)
-        mean = out[:, :self.action_dim]
-        log_std = out[:, self.action_dim:]
-        std = torch.exp(log_std)
-        normal = torch.distributions.Normal(mean, std)
-        new_actions = torch.tanh(normal.rsample())
-        q1_new = self.critic1(torch.cat([states, new_actions],1))
-        q2_new = self.critic2(torch.cat([states, new_actions],1))
-        q_new = torch.min(q1_new, q2_new)
-        log_prob = normal.log_prob(mean)
-        log_prob -= torch.log(1 - new_actions.pow(2) + 1e-6)
-        log_prob = log_prob.sum(1, keepdim=True)
-        actor_loss = (0.2*log_prob - q_new).mean()
-
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        self.actor_optimizer.step()
-
-        # Soft update
-        for tp, p in zip(self.target_critic1.parameters(), self.critic1.parameters()):
-            tp.data.copy_(self.tau*p.data + (1-self.tau)*tp.data)
-        for tp, p in zip(self.target_critic2.parameters(), self.critic2.parameters()):
-            tp.data.copy_(self.tau*p.data + (1-self.tau)*tp.data)
-
-        return critic1_loss.item(), critic2_loss.item(), actor_loss.item()
-
-# ----------------------------
-# Training Environment
-# ----------------------------
-class CarEnv:
-    def __init__(self):
-        self.max_speed = 100
-        self.max_steer = 50
-        self.speed = 0
-        self.steering = 25
-        self.step_count = 0
-        self.max_steps = 200
-        # distances: [front-left, front, front-right, left, right, rear]
-        self.distances = [100]*7
-
-    def reset(self):
-        self.speed = 0
-        self.steering = 25
-        self.step_count = 0
-        self.distances = [random.uniform(20,100) for _ in range(7)]
-        return self.get_state()
-
-    def get_state(self):
-        norm_dist = [d/100.0 for d in self.distances]
-        norm_speed = self.speed/self.max_speed
-        norm_steer = self.steering/self.max_steer
-        return np.array(norm_dist + [norm_speed, norm_steer], dtype=np.float32)
-
-    def step(self, action):
-        self.step_count += 1
-        # action: [-1,1] -> delta
-        steer_delta = action[0]*5  # max ±5 deg per step
-        speed_delta = action[1]*5  # max ±5% per step
-
-        self.steering = np.clip(self.steering + steer_delta, 0, self.max_steer)
-        self.speed = np.clip(self.speed + speed_delta, 0, self.max_speed)
-
-        # Simulate distances changing randomly for now
-        self.distances = [max(5,min(100,d + random.uniform(-5,5))) for d in self.distances]
-
-        # Reward shaping
-        reward = 0
-        # 1. Stay away from obstacles
-        min_front = min(self.distances[:6])
-        if min_front < 15:
-            reward -= 10
-        else:
-            reward += min_front/10
-        # 2. Encourage forward motion
-        reward += self.speed/50
-        # 3. Smooth steering
-        if abs(steer_delta)<2:
-            reward += 0.5
-
-        done = self.step_count>=self.max_steps
-        return self.get_state(), reward, done
-
-# ----------------------------
-# Training Loop
-# ----------------------------
-def train(num_episodes=3000):
-    env = CarEnv()
-    agent = SACAgent(state_dim=9, action_dim=2)
-    save_path = "vehicle_sac.pth"
-
-    for ep in range(num_episodes):
-=======
+import os
+import sys
 import time
-import random
-import os
-from SAC import FixedSAC6D  # Import the fixed SAC above
+import json
+from collections import deque
+from datetime import datetime
+import threading
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import queue
 
-class FixedTrainingEnv6D:
-    """Training environment with 6D state vector"""
+# Add parent directory to path
+sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
+
+# Import enhanced SAC implementation
+try:
+    from SAC import ReverseReadySAC
+    print("✅ Successfully imported ReverseReadySAC")
+except ImportError as e:
+    print(f"❌ Import error: {e}")
+    sys.exit(1)
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder for numpy types"""
+    def default(self, obj):
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
+        elif isinstance(obj, (datetime)):
+            return obj.isoformat()
+        return super().default(obj)
+
+class ParallelEnvironmentRunner:
+    """Runs multiple environments in parallel using threads"""
+    def __init__(self, num_envs=4, curriculum_level=0):
+        self.num_envs = num_envs
+        self.envs = []
+        self.states = []
+        self.dones = []
+        self.episode_rewards = [0] * num_envs
+        self.episode_steps = [0] * num_envs
+        self.scenario_types = []
+        
+        # Create environments
+        for i in range(num_envs):
+            env = ReverseTrainingEnv(
+                enable_stuck_scenarios=True, 
+                curriculum_level=curriculum_level,
+                env_id=i
+            )
+            self.envs.append(env)
+            self.states.append(env.reset())
+            self.dones.append(False)
+            self.scenario_types.append(env.scenario_type)
+        
+        self.lock = threading.Lock()
     
-    def __init__(self):
-        # State: [distance_norm, speed_norm, steering_norm, eye_norm, sin_time, obstacle_flag]
-        self.state_dim = 6
-        self.action_dim = 6  # [steering, throttle, eye, aux1, aux2, aux3]
+    def reset_env(self, env_idx):
+        """Reset a specific environment"""
+        with self.lock:
+            self.states[env_idx] = self.envs[env_idx].reset()
+            self.dones[env_idx] = False
+            self.episode_rewards[env_idx] = 0
+            self.episode_steps[env_idx] = 0
+            self.scenario_types[env_idx] = self.envs[env_idx].scenario_type
+        return self.states[env_idx]
+    
+    def step_env(self, env_idx, action):
+        """Take a step in a specific environment"""
+        with self.lock:
+            next_state, reward, done, info = self.envs[env_idx].step(action)
+            self.states[env_idx] = next_state
+            self.dones[env_idx] = done
+            self.episode_rewards[env_idx] += reward
+            self.episode_steps[env_idx] += 1
+        return next_state, reward, done, info
+
+class ReverseTrainingEnv:
+    def __init__(self, enable_stuck_scenarios=True, curriculum_level=0, env_id=0):
+        self.env_id = env_id
+        self.state_dim = 8
+        self.action_dim = 6
+        self.max_steps = 400
+        self.enable_stuck_scenarios = enable_stuck_scenarios
+        self.curriculum_level = curriculum_level
         
-        # Environment parameters
-        self.max_steps = 200
+        # Speed factors
+        self.FORWARD_SPEED_FACTOR = 5.0
+        self.REVERSE_SPEED_FACTOR = 3.0
+        self.MIN_DISTANCE = 5.0
+        self.MAX_DISTANCE = 300.0
+        
+        # Dynamic difficulty
+        self.difficulty_score = 0
+        self.success_streak = 0
+        
+        # Statistics
+        self.reverse_usage_stats = deque(maxlen=100)
+        self.collision_stats = deque(maxlen=100)
+        self.success_stats = deque(maxlen=100)
+        
+        # Performance tracking
+        self.episode_count = 0
+        self.total_steps = 0
+        
         self.reset()
-        
-        print("✅ Fixed Training Environment 6D initialized")
     
     def reset(self):
-        """Reset environment"""
-        # Random initial conditions
-        self.distance = random.uniform(50, 200)  # cm
-        self.speed = 0  # %
-        self.steering = 90  # degrees (center)
-        self.eye = 31.5  # eye position
         self.step_count = 0
+        self.difficulty_score = 0
+        self.collision_risk = 0
+        self.episode_count += 1
         
-        # Obstacle simulation
-        self.obstacle_distance = random.uniform(30, 150)
-        self.obstacle_angle = random.uniform(-30, 30)  # degrees from center
+        # Curriculum-based scenario generation
+        if self.curriculum_level == 0:
+            self._generate_easy_scenario()
+        elif self.curriculum_level == 1:
+            self._generate_medium_scenario()
+        else:
+            self._generate_hard_scenario()
+        
+        # State variables
+        self.steering = 90
+        self.eye = 31.5
+        self.obstacle_distance = self.distance
+        self.distance_history = deque([self.distance] * 10, maxlen=10)
+        self.reverse_used_this_episode = False
+        self.forward_used_this_episode = False
+        self.collision_avoided = False
         
         return self._get_state()
     
+    def _generate_easy_scenario(self):
+        self.distance = random.uniform(80, 200)
+        self.speed = random.uniform(10, 40)
+        self.obstacle_angle = random.uniform(-20, 20)
+        self.scenario_type = "NORMAL"
+    
+    def _generate_medium_scenario(self):
+        r = random.random()
+        if r < 0.3:
+            self.distance = random.uniform(15, 35)
+            self.speed = random.uniform(-5, 15)
+            self.scenario_type = "STUCK"
+        elif r < 0.6:
+            self.distance = random.uniform(20, 45)
+            self.speed = random.uniform(5, 25)
+            self.obstacle_angle = random.choice([-60, 60])
+            self.scenario_type = "DEAD_END"
+        else:
+            self.distance = random.uniform(40, 150)
+            self.speed = random.uniform(0, 40)
+            self.obstacle_angle = random.uniform(-45, 45)
+            self.scenario_type = "NORMAL"
+    
+    def _generate_hard_scenario(self):
+        r = random.random()
+        if r < 0.4:
+            self.distance = random.uniform(8, 25)
+            self.speed = random.uniform(-15, 10)
+            self.scenario_type = "CRITICAL_STUCK"
+        elif r < 0.8:
+            self.distance = random.uniform(10, 30)
+            self.speed = random.uniform(-10, 15)
+            self.obstacle_angle = random.choice([-90, 90])
+            self.scenario_type = "TIGHT_DEAD_END"
+        else:
+            self.distance = random.uniform(30, 100)
+            self.speed = random.uniform(-5, 30)
+            self.obstacle_angle = random.uniform(-80, 80)
+            self.scenario_type = "COMPLEX"
+    
     def _get_state(self):
-        """Get 6D state vector matching controller"""
-        state = np.zeros(6, dtype=np.float32)
-        
-        # 0: Normalized distance (0=close, 1=far)
+        state = np.zeros(8, dtype=np.float32)
         state[0] = min(1.0, self.distance / 200.0)
-        
-        # 1: Normalized speed (-1=reverse, 0=stop, 1=forward)
-        state[1] = self.speed / 100.0
-        
-        # 2: Normalized steering (-1=left, 0=center, 1=right)
+        state[1] = np.clip(self.speed / 100.0, -1.0, 1.0)
         state[2] = (self.steering - 90) / 50.0
-        
-        # 3: Normalized eye position (-1=left, 0=center, 1=right)
         state[3] = (self.eye - 31.5) / 15.0
         
-        # 4: Time/sin phase
-        state[4] = np.sin(self.step_count * 0.1)
+        if len(self.distance_history) >= 2:
+            trend = (self.distance - self.distance_history[-2]) / 10.0
+            state[4] = np.clip(trend, -1.0, 1.0)
+        else:
+            state[4] = 0.0
         
-        # 5: Obstacle flag (0=no obstacle, 1=obstacle close)
-        state[5] = 1.0 if self.distance < 50.0 else 0.0
+        state[5] = 1.0 if self.distance < 40.0 else 0.0
+        
+        if len(self.distance_history) >= 3:
+            risk = (self.distance_history[-1] - self.distance) / 3.0
+            state[6] = np.clip(risk, -1.0, 1.0)
+        else:
+            state[6] = 0.0
+        
+        state[7] = np.sin(self.step_count * 0.05)
         
         return state
     
     def step(self, action):
-        """
-        Execute action
-        action: [steering_norm, throttle_norm, eye_norm, aux1, aux2, aux3]
-        """
         self.step_count += 1
+        self.total_steps += 1
         
-        # Parse action (first 3 are main controls)
         steering_norm = np.clip(action[0], -1, 1)
         throttle_norm = np.clip(action[1], -1, 1)
         eye_norm = np.clip(action[2], -1, 1) if len(action) > 2 else 0
         
-        # Convert to hardware values (simulated)
-        steering_delta = steering_norm * 10  # ±10 degrees per step
-        throttle_delta = throttle_norm * 20  # ±20% per step
-        eye_delta = eye_norm * 5  # ±5 units per step
+        if throttle_norm < -0.1:
+            self.reverse_used_this_episode = True
+        if throttle_norm > 0.1:
+            self.forward_used_this_episode = True
         
-        # Update state
+        steering_delta = steering_norm * 5
+        throttle_delta = throttle_norm * 12
+        eye_delta = eye_norm * 3
+        
         self.steering = max(40, min(140, self.steering + steering_delta))
-        self.speed = max(-100, min(100, self.speed + throttle_delta))
+        self.speed = max(-80, min(80, self.speed + throttle_delta))
         self.eye = max(15, min(45, self.eye + eye_delta))
         
-        # Simulate movement
-        if self.speed > 0:
-            # Moving forward reduces distance to obstacle
-            speed_factor = self.speed / 100.0
-            self.distance -= speed_factor * 5
-            
-            # Random distance fluctuations
-            self.distance += random.uniform(-5, 5)
-            
-            # Don't go below 0
-            self.distance = max(0.1, self.distance)
+        speed_factor = abs(self.speed) / 100.0
+        if self.speed > 5:
+            self.distance -= speed_factor * self.FORWARD_SPEED_FACTOR
+        elif self.speed < -5:
+            self.distance += speed_factor * self.REVERSE_SPEED_FACTOR
         
-        # Calculate reward
-        reward = self._calculate_reward(steering_norm, throttle_norm)
+        self.distance += random.uniform(-0.5, 0.5)
+        self.distance = max(self.MIN_DISTANCE, min(self.MAX_DISTANCE, self.distance))
         
-        # Check termination
-        done = self.step_count >= self.max_steps
-        if self.distance < 10:  # Collision
+        self.distance_history.append(self.distance)
+        
+        if len(self.distance_history) >= 3:
+            self.collision_risk = max(0, (40 - self.distance) / 40) * \
+                                 (1 if self.speed > 0 else 0.5)
+        
+        reward, info = self._calculate_reward(steering_norm, throttle_norm)
+        
+        done = False
+        if self.step_count >= self.max_steps:
             done = True
-            reward -= 10
+            reward += 10.0
+        if self.distance <= self.MIN_DISTANCE + 2:
+            done = True
+            self.collision_stats.append(1)
+            reward -= 50.0
+        else:
+            self.collision_stats.append(0)
         
-        return self._get_state(), reward, done
+        if self.distance > 80 and self.distance < 200 and self.step_count > 50:
+            self.success_stats.append(1)
+            self.success_streak += 1
+        else:
+            self.success_stats.append(0)
+            self.success_streak = max(0, self.success_streak - 0.5)
+        
+        self.reverse_usage_stats.append(1 if self.reverse_used_this_episode else 0)
+        
+        return self._get_state(), reward, done, info
     
     def _calculate_reward(self, steering_norm, throttle_norm):
-        """Calculate reward for training"""
-        reward = 0
+        reward = 0.0
+        info = {}
         
-        # 1. Distance reward (maintain safe distance)
-        if 30 < self.distance < 100:
-            reward += 1.0
-        elif self.distance >= 100:
-            reward += 0.5
-        elif self.distance < 20:
+        if self.distance < 20:
+            reward -= 5.0
+            if self.speed < -10:
+                reward += 3.0
+            elif self.speed > 10:
+                reward -= 5.0
+        elif self.distance < 40:
             reward -= 2.0
+            if self.speed < -5:
+                reward += 2.0
+            elif self.speed > 15:
+                reward -= 2.0
+        elif 60 < self.distance < 150:
+            reward += 2.0
+            if self.speed > 20:
+                reward += 1.0
+            if abs(steering_norm) < 0.3:
+                reward += 0.5
+        elif self.distance > 200:
+            reward -= 1.0
         
-        # 2. Speed reward (encourage movement)
-        if 20 < abs(self.speed) < 70:
-            reward += 0.3
+        if len(self.distance_history) >= 5:
+            distance_change = self.distance - self.distance_history[-5]
+            if self.distance < 40:
+                if distance_change > 5:
+                    reward += 5.0
+                elif distance_change > 2:
+                    reward += 2.0
+            elif self.distance > 100:
+                if abs(distance_change) < 3:
+                    reward += 1.0
         
-        # 3. Steering reward (smooth steering)
-        if abs(steering_norm) < 0.5:  # Not too extreme
-            reward += 0.2
+        if self.scenario_type in ["STUCK", "CRITICAL_STUCK", "DEAD_END", "TIGHT_DEAD_END"]:
+            if self.reverse_used_this_episode:
+                reward += 2.0
+                if self.distance > self.distance_history[0]:
+                    reward += 3.0
         
-        # 4. Progress reward (moving forward)
-        if self.speed > 30 and self.distance > 30:
-            reward += 0.5
+        info['reward_breakdown'] = {
+            'distance': float(reward),
+            'reverse_used': bool(self.reverse_used_this_episode)
+        }
         
-        # 5. Penalty for extreme actions
-        if abs(steering_norm) > 0.8:
-            reward -= 0.3
-        if abs(throttle_norm) > 0.8:
-            reward -= 0.3
-        
-        return reward
-    
-    def render(self):
-        """Simple rendering"""
-        print(f"Step {self.step_count}: "
-              f"Dist={self.distance:.1f}cm, "
-              f"Speed={self.speed:.0f}%, "
-              f"Steer={self.steering:.0f}°, "
-              f"Eye={self.eye:.1f}")
+        return float(reward), info
 
-def train_fixed_sac_6d():
-    """Train SAC with 6D state"""
-    print("=" * 70)
-    print("FIXED SAC TRAINING - 6D STATE VERSION")
-    print("=" * 70)
-    print("Training 6D → 6D model that matches vehicle controller")
-    print("State: [distance, speed, steering, eye, time_sin, obstacle_flag]")
-    print("Action: [steering, throttle, eye, aux1, aux2, aux3]")
-    print("=" * 70)
+class AsyncDataCollector:
+    """Asynchronous data collection using multiple threads"""
+    def __init__(self, agent, num_workers=4):
+        self.agent = agent
+        self.num_workers = num_workers
+        self.data_queue = queue.Queue(maxsize=10000)
+        self.stop_event = threading.Event()
+        self.workers = []
+        self.collected_episodes = 0
+        self.lock = threading.Lock()
     
-    # Create environment and agent
-    env = FixedTrainingEnv6D()
-    agent = FixedSAC6D()
+    def start(self):
+        """Start worker threads"""
+        for i in range(self.num_workers):
+            worker = threading.Thread(target=self._worker_loop, args=(i,))
+            worker.daemon = True
+            worker.start()
+            self.workers.append(worker)
+        print(f"✅ Started {self.num_workers} data collection workers")
     
-    # Load existing model if available
-    model_path = "AI/spatial_rl_model_6d.pth"
-    if os.path.exists(model_path):
-        agent.load(model_path)
-        print(f"✅ Loaded existing model from {model_path}")
+    def stop(self):
+        """Stop all workers"""
+        self.stop_event.set()
+        for worker in self.workers:
+            worker.join(timeout=1.0)
+    
+    def _worker_loop(self, worker_id):
+        """Worker thread main loop"""
+        env = ReverseTrainingEnv(enable_stuck_scenarios=True, curriculum_level=0, env_id=worker_id)
+        
+        while not self.stop_event.is_set():
+            state = env.reset()
+            episode_data = []
+            done = False
+            step = 0
+            
+            while not done and step < env.max_steps:
+                # Get action from agent (thread-safe)
+                action = self.agent.get_action_async(state)
+                next_state, reward, done, info = env.step(action)
+                
+                episode_data.append({
+                    'state': state.tolist() if isinstance(state, np.ndarray) else state,
+                    'action': action.tolist() if isinstance(action, np.ndarray) else action,
+                    'reward': float(reward),
+                    'next_state': next_state.tolist() if isinstance(next_state, np.ndarray) else next_state,
+                    'done': bool(done),
+                    'used_reverse': bool(action[1] < -0.1),
+                    'scenario_type': env.scenario_type
+                })
+                
+                state = next_state
+                step += 1
+            
+            # Queue the episode data
+            try:
+                self.data_queue.put(episode_data, timeout=1.0)
+                with self.lock:
+                    self.collected_episodes += 1
+            except queue.Full:
+                pass
+
+def train_reverse_ready_agent_multithreaded():
+    """Multi-threaded training with active learning"""
+    print("=" * 80)
+    print("🚗 MULTITHREADED REVERSE-READY SAC TRAINING")
+    print("=" * 80)
+    
+    # Create timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Setup directories
+    base_dir = '/home/pi/Desktop/Intelligent-Vehicle-Navigation'
+    models_dir = os.path.join(base_dir, 'AI', 'Models')
+    checkpoint_dir = os.path.join(models_dir, f'checkpoints_{timestamp}')
+    logs_dir = os.path.join(base_dir, 'AI', 'Logs')
+    
+    for directory in [models_dir, checkpoint_dir, logs_dir]:
+        os.makedirs(directory, exist_ok=True)
+        print(f"📁 Directory ready: {directory}")
     
     # Training parameters
-    num_episodes = 1000
-    update_freq = 10  # Update every N steps
-    save_freq = 50    # Save every N episodes
+    num_updates = 50000  # Number of training updates
+    eval_interval = 100
+    save_interval = 25  # Save every 25 updates
+    batch_size = 256
     
-    print(f"\nTraining for {num_episodes} episodes...")
-    print(f"Model will be saved to: {model_path}\n")
+    # Initialize agent
+    agent = ReverseReadySAC(
+        batch_size=batch_size,
+        auto_alpha=True,
+        use_per=True  # Use Prioritized Experience Replay
+    )
     
-    episode_rewards = []
+    # Start async data collector
+    num_cpus = mp.cpu_count()
+    num_workers = min(8, num_cpus)  # Use up to 8 workers
+    collector = AsyncDataCollector(agent, num_workers=num_workers)
+    collector.start()
     
-    for episode in range(num_episodes):
-        # Reset environment
-        state = env.reset()
-        episode_reward = 0
-        done = False
-        
-        # Progress display
-        if (episode + 1) % 10 == 0:
-            print(f"\nEpisode {episode + 1}/{num_episodes}")
-        
-        step = 0
-        while not done:
-            # Get action from agent
-            action = agent.get_action(state, deterministic=False)
+    print(f"\n🎯 Training for {num_updates} updates...")
+    print(f"🤖 Using {num_workers} parallel environments")
+    print(f"📝 Logs: {logs_dir}")
+    print(f"💾 Checkpoints every {save_interval} updates to: {checkpoint_dir}")
+    print("=" * 80)
+    
+    # Training stats
+    update_times = deque(maxlen=100)
+    critic_losses = deque(maxlen=100)
+    actor_losses = deque(maxlen=100)
+    collected_episodes_history = []
+    
+    try:
+        for update in range(num_updates):
+            update_start = time.time()
             
-            # Take step
-            next_state, reward, done = env.step(action)
+            # Collect batch from queue
+            batch_data = []
+            while len(batch_data) < batch_size and not collector.data_queue.empty():
+                try:
+                    episode = collector.data_queue.get_nowait()
+                    # Flatten episode into transitions
+                    for transition in episode:
+                        batch_data.append((
+                            np.array(transition['state']),
+                            np.array(transition['action']),
+                            transition['reward'],
+                            np.array(transition['next_state']),
+                            transition['done'],
+                            transition['used_reverse'],
+                            2.0 if transition['scenario_type'] in ['STUCK', 'CRITICAL_STUCK'] else 1.0
+                        ))
+                except queue.Empty:
+                    break
             
-            # Store transition
-            agent.store_transition(state, action, reward, next_state, done)
+            # If we don't have enough data, do a quick collection
+            if len(batch_data) < batch_size:
+                # Collect some experiences synchronously
+                env = ReverseTrainingEnv(enable_stuck_scenarios=True)
+                for _ in range(5):
+                    state = env.reset()
+                    done = False
+                    while not done:
+                        action = agent.get_action(state)
+                        next_state, reward, done, info = env.step(action)
+                        priority = 2.0 if env.scenario_type in ['STUCK', 'CRITICAL_STUCK'] else 1.0
+                        batch_data.append((state, action, reward, next_state, done, 
+                                         action[1] < -0.1, priority))
+                        state = next_state
+                        if len(batch_data) >= batch_size:
+                            break
             
-            # Update agent periodically
-            if step % update_freq == 0:
-                agent.update()
+            # Perform multiple updates per collected batch for efficiency
+            num_updates_this_iter = min(5, len(batch_data) // (batch_size // 2))
             
-            # Update state
-            state = next_state
-            episode_reward += reward
-            step += 1
+            for _ in range(num_updates_this_iter):
+                # Sample batch
+                if len(batch_data) > batch_size:
+                    batch_indices = random.sample(range(len(batch_data)), batch_size)
+                    batch = [batch_data[i] for i in batch_indices]
+                else:
+                    batch = batch_data[:batch_size]
+                
+                # Store in agent's replay buffer
+                for exp in batch:
+                    state, action, reward, next_state, done, used_reverse, priority = exp
+                    agent.store_transition(
+                        state, action, reward, next_state, done,
+                        used_reverse=used_reverse,
+                        priority=priority
+                    )
+                
+                # Update agent
+                stats = agent.update(reverse_priority=True)
+                
+                if stats:
+                    critic_losses.append(stats.get('critic_loss', 0))
+                    actor_losses.append(stats.get('actor_loss', 0))
+            
+            update_time = time.time() - update_start
+            update_times.append(update_time)
+            
+            collected_episodes_history.append(collector.collected_episodes)
+            
+            # Progress reporting
+            if (update + 1) % eval_interval == 0:
+                avg_critic_loss = np.mean(critic_losses) if critic_losses else 0
+                avg_actor_loss = np.mean(actor_losses) if actor_losses else 0
+                episodes_collected = collector.collected_episodes
+                updates_per_second = 1.0 / np.mean(update_times) if update_times else 0
+                
+                print(f"\r\033[K", end="")
+                print(f"Update {update+1:6d} | "
+                      f"Critic: {avg_critic_loss:8.4f} | "
+                      f"Actor: {avg_actor_loss:8.4f} | "
+                      f"Episodes: {episodes_collected:6d} | "
+                      f"Speed: {updates_per_second:5.1f} upd/s")
+                
+                # Sample action test
+                if update > 100:
+                    test_state = np.random.randn(8).astype(np.float32)
+                    test_action = agent.get_action(test_state, deterministic=True)
+                    throttle_status = "REVERSE" if test_action[1] < -0.1 else "FORWARD" if test_action[1] > 0.1 else "STOP"
+                    print(f"      └─ Sample throttle: {test_action[1]:+.3f} ({throttle_status})")
+                
+                sys.stdout.flush()
+            
+            # Save checkpoint
+            if (update + 1) % save_interval == 0:
+                checkpoint_path = os.path.join(checkpoint_dir, f'model_update{update+1}.pth')
+                
+                # Save with proper JSON serialization
+                metadata = {
+                    'update': int(update + 1),
+                    'avg_critic_loss': float(avg_critic_loss) if 'avg_critic_loss' in locals() else 0.0,
+                    'episodes_collected': int(collector.collected_episodes),
+                    'timestamp': timestamp,
+                    'update_speed': float(updates_per_second) if 'updates_per_second' in locals() else 0.0
+                }
+                
+                # Save model
+                agent.save(checkpoint_path, metadata)
+                
+                # Also save latest
+                latest_path = os.path.join(models_dir, 'reverse_ready_model_latest.pth')
+                agent.save(latest_path, metadata)
+                
+                print(f"\n   💾 Checkpoint saved - Update {update+1}")
+    
+    except KeyboardInterrupt:
+        print("\n\n🛑 Training interrupted by user")
+    
+    finally:
+        # Clean shutdown
+        collector.stop()
         
-        # Store episode reward
-        episode_rewards.append(episode_reward)
+        # Final save
+        final_path = os.path.join(models_dir, f'reverse_ready_model_final_{timestamp}.pth')
+        final_metadata = {
+            'total_updates': int(num_updates),
+            'total_episodes': int(collector.collected_episodes),
+            'timestamp': timestamp,
+            'final_critic_loss': float(np.mean(critic_losses)) if critic_losses else 0.0,
+            'final_actor_loss': float(np.mean(actor_losses)) if actor_losses else 0.0
+        }
         
-        # Save model periodically
-        if (episode + 1) % save_freq == 0:
-            agent.save(model_path)
-            
-            # Print training progress
-            avg_reward = np.mean(episode_rewards[-save_freq:])
-            print(f"  Saved model after episode {episode + 1}")
-            print(f"  Average reward (last {save_freq}): {avg_reward:.2f}")
+        agent.save(final_path, final_metadata)
+        print(f"\n✅ Final model saved to: {final_path}")
         
-        # Print episode summary
-        if (episode + 1) % 10 == 0:
-            avg_reward = np.mean(episode_rewards[-10:]) if len(episode_rewards) >= 10 else episode_reward
-            print(f"  Episode {episode + 1:4d}: "
-                  f"Reward: {episode_reward:7.2f} | "
-                  f"Avg10: {avg_reward:7.2f} | "
-                  f"Steps: {step:3d}")
-    
-    # Final save
-    agent.save("AI/spatial_rl_model_6d_final.pth")
-    
-    # Training summary
-    print(f"\n{'='*70}")
-    print("TRAINING COMPLETE!")
-    print(f"{'='*70}")
-    
-    if episode_rewards:
-        final_avg = np.mean(episode_rewards[-100:]) if len(episode_rewards) >= 100 else np.mean(episode_rewards)
-        print(f"📊 Training Statistics:")
-        print(f"   Total Episodes: {len(episode_rewards)}")
-        print(f"   Final Average Reward: {final_avg:.2f}")
-        print(f"   Max Reward: {np.max(episode_rewards):.2f}")
-        print(f"   Min Reward: {np.min(episode_rewards):.2f}")
-        print(f"   Training Steps: {agent.total_steps}")
-    
-    # Test the trained model
-    test_trained_model(agent)
+        # Save training summary
+        summary_path = os.path.join(logs_dir, f'training_summary_{timestamp}.json')
+        with open(summary_path, 'w') as f:
+            json.dump(final_metadata, f, indent=2, cls=NumpyEncoder)
+        print(f"📊 Training summary saved to: {summary_path}")
     
     return agent
 
-def test_trained_model(agent, num_tests=3):
-    """Test the trained model"""
-    print(f"\n🧪 TESTING TRAINED 6D MODEL...")
+def test_reverse_agent_multithreaded(agent, num_tests=10):
+    """Comprehensive testing with multiple scenarios"""
+    print("\n🧪 RUNNING COMPREHENSIVE TESTS...")
     
-    env = FixedTrainingEnv6D()
-    test_rewards = []
+    test_results = {}
     
-    for test in range(num_tests):
->>>>>>> ece7e52 (Working Codes with Pending Speed Improvement)
+    for scenario in ['NORMAL', 'STUCK', 'DEAD_END', 'CRITICAL_STUCK']:
+        print(f"\n--- Testing scenario: {scenario} ---")
+        env = ReverseTrainingEnv(enable_stuck_scenarios=True)
+        
+        # Force scenario
+        if scenario == 'STUCK':
+            env.distance = random.uniform(10, 20)
+            env.speed = random.uniform(-5, 5)
+        elif scenario == 'DEAD_END':
+            env.distance = random.uniform(15, 25)
+            env.speed = random.uniform(5, 15)
+            env.obstacle_angle = 45
+        elif scenario == 'CRITICAL_STUCK':
+            env.distance = random.uniform(5, 12)
+            env.speed = random.uniform(-10, 0)
+        
         state = env.reset()
         total_reward = 0
-        done = False
-        while not done:
-<<<<<<< HEAD
-            action = agent.get_action(state)
-            next_state, reward, done = env.step(action)
-            agent.store(state, action, reward, next_state, done)
-            state = next_state
-            total_reward += reward
-            agent.update()
-        print(f"Episode {ep+1}/{num_episodes} | Reward: {total_reward:.2f}")
-        if (ep+1)%50==0:
-            torch.save(agent.actor.state_dict(), save_path)
-            print(f"Model saved at episode {ep+1}")
-    torch.save(agent.actor.state_dict(), save_path)
-    print("Training finished and model saved.")
-
-# ----------------------------
-# Main
-# ----------------------------
-if __name__=="__main__":
-    train()
-=======
-            # Use deterministic actions
-            action = agent.get_action(state, deterministic=True)
-            state, reward, done = env.step(action)
-            total_reward += reward
+        steps = 0
+        reverse_used = False
         
-        test_rewards.append(total_reward)
-        print(f"  Final Reward: {total_reward:.2f}")
-        print(f"  Final Distance: {env.distance:.1f}cm")
-        print(f"  Final Speed: {env.speed:.0f}%")
-        print(f"  Final Steering: {env.steering:.0f}°")
-        print(f"  Final Eye: {env.eye:.1f}")
+        for step in range(150):
+            action = agent.get_action(state, deterministic=True)
+            state, reward, done, _ = env.step(action)
+            total_reward += reward
+            steps += 1
+            
+            if action[1] < -0.1:
+                reverse_used = True
+            
+            if step % 30 == 0:
+                throttle_status = "REVERSE" if action[1] < -0.1 else "FORWARD" if action[1] > 0.1 else "STOP"
+                print(f"Step {step:3d} | Distance: {env.distance:6.2f} | Speed: {env.speed:6.2f} | {throttle_status}")
+            
+            if done:
+                break
+        
+        test_results[scenario] = {
+            'total_reward': float(total_reward),
+            'steps': int(steps),
+            'reverse_used': bool(reverse_used),
+            'final_distance': float(env.distance)
+        }
+        
+        print(f"Result: Reward={total_reward:.2f}, Steps={steps}, Reverse Used={reverse_used}")
     
-    print(f"\n🎯 Test Results:")
-    print(f"   Average Reward: {np.mean(test_rewards):.2f} ± {np.std(test_rewards):.2f}")
-    print(f"   Best Test: {np.max(test_rewards):.2f}")
-
-def export_for_vehicle(model_path="AI/spatial_rl_model_6d_final.pth"):
-    """Export trained 6D model for vehicle"""
-    if not os.path.exists(model_path):
-        print(f"❌ Model not found: {model_path}")
-        return
+    # Save test results
+    base_dir = '/home/pi/Desktop/Intelligent-Vehicle-Navigation'
+    logs_dir = os.path.join(base_dir, 'AI', 'Logs')
+    os.makedirs(logs_dir, exist_ok=True)
     
-    # Load the model
-    checkpoint = torch.load(model_path, map_location='cpu')
+    test_path = os.path.join(logs_dir, f'test_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
+    with open(test_path, 'w') as f:
+        json.dump(test_results, f, indent=2, cls=NumpyEncoder)
+    print(f"\n📊 Test results saved to: {test_path}")
     
-    # Create simplified export
-    export_data = {
-        'actor': checkpoint['actor_state_dict'],
-        'critic1': checkpoint['critic_state_dict']['q1.state_dict'] if 'q1.state_dict' in checkpoint['critic_state_dict'] else None,
-        'critic2': checkpoint['critic_state_dict']['q2.state_dict'] if 'q2.state_dict' in checkpoint['critic_state_dict'] else None,
-        'config': checkpoint.get('config', {}),
-        'training_step': checkpoint.get('total_steps', 0)
-    }
-    
-    export_path = "AI/spatial_rl_model.pth"  # Overwrite existing model
-    torch.save(export_data, export_path)
-    
-    print(f"\n✅ Exported vehicle-ready 6D model to: {export_path}")
-    print(f"   Model Size: {os.path.getsize(export_path) / 1024:.1f} KB")
-    
-    # Test that it loads correctly
-    agent = FixedSAC6D()
-    agent.load(export_path)
-    test_state = np.random.randn(6)
-    action = agent.get_action(test_state, deterministic=True)
-    print(f"   Test inference: State {test_state.shape} → Action {action.shape}")
+    return test_results
 
 if __name__ == "__main__":
-    # Train the fixed 6D SAC
-    trained_agent = train_fixed_sac_6d()
+    # Train with multi-threading
+    trained_agent = train_reverse_ready_agent_multithreaded()
     
-    # Export for vehicle
-    export_for_vehicle()
-    
-    print("\n" + "="*70)
-    print("✅ FIXED 6D TRAINING COMPLETE!")
-    print("The AI now uses the correct 6D state vector")
-    print("Next steps:")
-    print("  1. Run your vehicle controller with the new model")
-    print("  2. The controller will use 6D state → 6D action")
-    print("  3. AI should now output meaningful control values!")
-    print("="*70)
->>>>>>> ece7e52 (Working Codes with Pending Speed Improvement)
+    if trained_agent:
+        test_reverse_agent_multithreaded(trained_agent)
+        
+        print("\n" + "=" * 80)
+        print("✅ TRAINING COMPLETE!")
+        print("=" * 80)
+    else:
+        print("\n❌ Training failed - check errors above")

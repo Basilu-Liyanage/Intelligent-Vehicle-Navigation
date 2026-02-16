@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-CAR EYE CONTROLLER - 4 Degree Scanning
-Properly scans left and right in 4-degree increments
+CAR EYE CONTROLLER - 4 Degree Scanning with Adaptive Modes
+- Mode 1: Full scan (8 points) for stationary/low speed
+- Mode 2: Quick scan (3 points) for moving
+- Original method names preserved for compatibility
 """
 
 import time
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 import math
 import sys
 
@@ -24,6 +26,10 @@ EYE_MAX_ANGLE = 46.0      # Right limit
 SCAN_STEP = 4.0           # Scan every 4 degrees
 SLEEP_TIME = 0.08         # Time between LiDAR readings
 
+# NEW: Mode configurations
+QUICK_SCAN_ANGLES = [EYE_MIN_ANGLE, EYE_DEFAULT_ANGLE, EYE_MAX_ANGLE]  # Left, Center, Right
+FULL_SCAN_ANGLES = [15.0, 19.0, 23.0, 27.0, 31.5, 35.0, 39.0, 43.0, 46.0]  # 9 points covering full range
+
 # ============================================================================
 # CAR EYE CLASS WITH PROPER 4-DEGREE SCANNING
 # ============================================================================
@@ -37,9 +43,17 @@ class CarEye:
         self.current_angle = EYE_DEFAULT_ANGLE
         self.angle = EYE_DEFAULT_ANGLE  # For compatibility with original code
         
+        # NEW: Cache for last scan results
+        self.last_full_scan = []
+        self.last_full_scan_time = 0
+        self.last_quick_scan = []
+        self.last_quick_scan_time = 0
+        
         # Initialize eye to center
         self.reset()
         print(f"✅ CarEye initialized - Center: {EYE_DEFAULT_ANGLE}")
+        print(f"   Full scan: {len(FULL_SCAN_ANGLES)} points")
+        print(f"   Quick scan: {len(QUICK_SCAN_ANGLES)} points")
     
     def set_angle(self, angle: float) -> float:
         """
@@ -117,8 +131,11 @@ class CarEye:
         self.set_angle(EYE_DEFAULT_ANGLE)
         print(f"🎯 Eye reset to center: {EYE_DEFAULT_ANGLE}")
     
+    # ==================== ORIGINAL METHODS (PRESERVED) ====================
+    
     def scan_4_degrees(self) -> List[Tuple[float, float]]:
         """
+        ORIGINAL METHOD - PRESERVED
         Scan environment every 4 degrees
         Returns list of (distance, angle) pairs
         """
@@ -146,15 +163,48 @@ class CarEye:
             
             # Move 4 degrees left
             angle -= SCAN_STEP
-        
+            time.sleep(.1)
         # Return to center
         self.reset()
+        
+        # Cache the result
+        self.last_full_scan = distances
+        self.last_full_scan_time = time.time()
         
         print(f"📊 Scan complete: {len(distances)} readings")
         return distances
     
+    def quick_scan_3_points(self) -> Tuple[float, float, float]:
+        """
+        ORIGINAL METHOD - PRESERVED
+        Quick scan left, center, right (for faster decisions)
+        """
+        print("🚀 Quick 3-point scan:")
+        points = []
+        
+        for angle in [EYE_MIN_ANGLE, EYE_DEFAULT_ANGLE, EYE_MAX_ANGLE]:
+            self.set_angle(angle)
+            time.sleep(SLEEP_TIME)
+            distance = self.get_center_distance()
+            points.append(distance)
+            
+            # Show reading
+            position = "LEFT" if angle == EYE_MIN_ANGLE else "RIGHT" if angle == EYE_MAX_ANGLE else "CENTER"
+            print(f"   {position:6s}: {angle:4.1f}° → {distance:6.1f}cm")
+            time.sleep(.1)
+        
+        # Return to center
+        self.reset()
+        
+        # Cache the result
+        self.last_quick_scan = points
+        self.last_quick_scan_time = time.time()
+        
+        return tuple(points)
+    
     def get_moving_direction(self) -> Tuple[float, float]:
         """
+        ORIGINAL METHOD - PRESERVED
         Find best direction to move using 4-degree scanning
         Returns: (best_distance, best_angle)
         """
@@ -164,6 +214,7 @@ class CarEye:
         
         # Perform full scan
         scan_data = self.scan_4_degrees()
+        time.sleep(.01)
         
         if not scan_data:
             print("⚠️  No valid distance readings")
@@ -189,6 +240,169 @@ class CarEye:
         
         return best_distance, best_angle
     
+    def smart_scan(self, target_angle: float = None):
+        """
+        ORIGINAL METHOD - PRESERVED
+        Smart scanning: 
+        - If target_angle given, goes directly there
+        - Otherwise performs 4-degree scan
+        """
+        if target_angle is not None:
+            # Go directly to target angle
+            print(f"🎯 Moving to target: {target_angle:.1f}°")
+            self.set_angle(target_angle)
+            time.sleep(SLEEP_TIME)
+            distance = self.get_center_distance()
+            return [(distance, target_angle)]
+        else:
+            # Full 4-degree scan
+            return self.scan_4_degrees()
+    
+    # ==================== NEW ADAPTIVE SCANNING METHODS ====================
+    
+    def adaptive_scan(self, speed_percent: float) -> Tuple[List[Tuple[float, float]], str]:
+        """
+        NEW METHOD: Choose scan mode based on speed
+        Args:
+            speed_percent: Current speed as percentage (0-100 forward, negative for reverse)
+        Returns:
+            (scan_results, mode_name)
+        """
+        # If reversing, no scan
+        if speed_percent < 0:
+            print("🔙 Reverse mode - scanning paused")
+            return [], "REVERSE"
+        
+        # Choose mode based on speed threshold (20%)
+        if speed_percent <= 20:
+            # Stationary or slow speed - full scan
+            print(f"🐢 Low speed ({speed_percent:.0f}%) - Full scan mode")
+            return self.perform_full_scan(), "FULL"
+        else:
+            # Moving - quick scan
+            print(f"🚗 Moving ({speed_percent:.0f}%) - Quick scan mode")
+            return self.perform_quick_scan(), "QUICK"
+    
+    def perform_full_scan(self) -> List[Tuple[float, float]]:
+        """
+        NEW METHOD: Full scan using predefined angles
+        Returns list of (distance, angle) tuples
+        """
+        print("📡 Performing FULL scan (9 points)...")
+        results = []
+        
+        # Store current position to return later
+        original_angle = self.current_angle
+        
+        # Scan all predefined angles
+        for angle in FULL_SCAN_ANGLES:
+            self.set_angle(angle)
+            time.sleep(.01)
+            time.sleep(SLEEP_TIME)
+            distance = self.get_center_distance()
+            
+            if 0 < distance < 800:
+                results.append((distance, angle))
+                print(f"   Angle: {angle:5.1f}° → Distance: {distance:6.1f}cm")
+        
+        # Return to original position
+        self.set_angle(original_angle)
+        time.sleep(.01)
+        # Cache results
+        self.last_full_scan = results
+        self.last_full_scan_time = time.time()
+        
+        print(f"📊 Full scan complete: {len(results)} readings")
+        return results
+    
+    def perform_quick_scan(self) -> List[Tuple[float, float]]:
+        """
+        NEW METHOD: Quick scan (left, center, right)
+        Returns list of (distance, angle) tuples
+        """
+        print("⚡ Performing QUICK scan (3 points)...")
+        results = []
+        
+        # Store current position to return later
+        original_angle = self.current_angle
+        
+        # Scan left, center, right
+        for angle in QUICK_SCAN_ANGLES:
+            self.set_angle(angle)
+            time.sleep(SLEEP_TIME)
+            distance = self.get_center_distance()
+            
+            if 0 < distance < 800:
+                results.append((distance, angle))
+                
+                # Show position label
+                if angle == EYE_MIN_ANGLE:
+                    pos = "LEFT"
+                elif angle == EYE_MAX_ANGLE:
+                    pos = "RIGHT"
+                else:
+                    pos = "CENTER"
+                print(f"   {pos:6s}: {angle:4.1f}° → {distance:6.1f}cm")
+            time.sleep(.1)
+        # Return to original position
+        self.set_angle(original_angle)
+        
+        # Cache results
+        self.last_quick_scan = [d for d, _ in results]  # Store just distances for quick access
+        self.last_quick_scan_time = time.time()
+        
+        print(f"⚡ Quick scan complete")
+        return results
+    
+    def get_best_direction_from_scan(self, scan_results: List[Tuple[float, float]]) -> Tuple[float, float]:
+        """
+        NEW METHOD: Find best direction from scan results
+        Returns: (best_distance, best_angle)
+        """
+        if not scan_results:
+            return 0, self.current_angle
+        
+        # Find angle with maximum distance
+        best_distance, best_angle = max(scan_results, key=lambda x: x[0])
+        return best_distance, best_angle
+    
+    def get_scan_with_context(self, speed_percent: float) -> dict:
+        """
+        NEW METHOD: Get scan results with context information
+        Returns dict with scan data and metadata
+        """
+        scan_results, mode = self.adaptive_scan(speed_percent)
+        
+        if not scan_results:
+            return {
+                'mode': mode,
+                'success': False,
+                'best_distance': 0,
+                'best_angle': self.current_angle,
+                'readings': []
+            }
+        
+        best_distance, best_angle = self.get_best_direction_from_scan(scan_results)
+        
+        # Find center reading if available
+        center_reading = None
+        for d, a in scan_results:
+            if abs(a - EYE_DEFAULT_ANGLE) < 2.0:
+                center_reading = d
+                break
+        
+        return {
+            'mode': mode,
+            'success': True,
+            'best_distance': best_distance,
+            'best_angle': best_angle,
+            'center_distance': center_reading,
+            'readings': scan_results,
+            'timestamp': time.time()
+        }
+    
+    # ==================== VISUALIZATION METHODS ====================
+    
     def visualize_scan(self, scan_data: List[Tuple[float, float]], best_angle: float):
         """Create visual representation of the scan"""
         print("\n👁️  ENVIRONMENT MAP:")
@@ -207,7 +421,7 @@ class CarEye:
         # Print visual map
         for angle, distance in zip(angles, distances):
             # Scale distance to 0-50 for visualization
-            scaled = int((distance - min_dist) / (max_dist - min_dist) * 50) if max_dist > min_dist else 0
+            scaled = int((distance - min_dist) / (max_dist - min_dist + 0.001) * 50) if max_dist > min_dist else 0
             bars = "█" * max(1, scaled)
             
             # Mark center and best angle
@@ -219,45 +433,9 @@ class CarEye:
                 marker = "│"
             
             print(f"   {angle:5.1f}° {marker} {bars:50s} {distance:6.1f}cm")
-    
-    def quick_scan_3_points(self) -> Tuple[float, float, float]:
-        """Quick scan left, center, right (for faster decisions)"""
-        points = []
-        
-        for angle in [EYE_MIN_ANGLE, EYE_DEFAULT_ANGLE, EYE_MAX_ANGLE]:
-            self.set_angle(angle)
-            time.sleep(SLEEP_TIME)
-            distance = self.get_center_distance()
-            points.append(distance)
-            
-            # Show reading
-            position = "LEFT" if angle == EYE_MIN_ANGLE else "RIGHT" if angle == EYE_MAX_ANGLE else "CENTER"
-            print(f"   {position:6s}: {angle:4.1f}° → {distance:6.1f}cm")
-        
-        # Return to center
-        self.reset()
-        
-        return tuple(points)
-    
-    def smart_scan(self, target_angle: float = None):
-        """
-        Smart scanning: 
-        - If target_angle given, goes directly there
-        - Otherwise performs 4-degree scan
-        """
-        if target_angle is not None:
-            # Go directly to target angle
-            print(f"🎯 Moving to target: {target_angle:.1f}°")
-            self.set_angle(target_angle)
-            time.sleep(SLEEP_TIME)
-            distance = self.get_center_distance()
-            return [(distance, target_angle)]
-        else:
-            # Full 4-degree scan
-            return self.scan_4_degrees()
 
 # ============================================================================
-# TEST FUNCTIONS
+# TEST FUNCTIONS (PRESERVED)
 # ============================================================================
 
 def test_basic_movement():
@@ -342,13 +520,46 @@ def test_moving_direction():
     eye.reset()
     print("\n✅ Moving direction test complete")
 
+# ==================== NEW TEST FUNCTIONS ====================
+
+def test_adaptive_scan():
+    """Test the new adaptive scanning modes"""
+    print("\n" + "="*60)
+    print("🔄 TESTING ADAPTIVE SCANNING")
+    print("="*60)
+    
+    pca = PCA9685Controller()
+    eye = CarEye(pca)
+    
+    # Test different speed scenarios
+    test_speeds = [-10, 0, 10, 30, 50, 80]
+    
+    for speed in test_speeds:
+        print(f"\n{'='*40}")
+        print(f"Speed: {speed}%")
+        print(f"{'='*40}")
+        
+        result = eye.get_scan_with_context(speed)
+        
+        if result['success']:
+            print(f"Mode: {result['mode']}")
+            print(f"Best direction: {result['best_angle']:.1f}° → {result['best_distance']:.1f}cm")
+            if result['center_distance']:
+                print(f"Center distance: {result['center_distance']:.1f}cm")
+        else:
+            print(f"Mode: {result['mode']} - No scan")
+        
+        time.sleep(1)
+    
+    print("\n✅ Adaptive scan test complete")
+
 # ============================================================================
 # MAIN
 # ============================================================================
 
 if __name__ == "__main__":
     print("\n" + "="*80)
-    print("🤖 CAR EYE CONTROLLER - 4° SCANNING SYSTEM")
+    print("🤖 CAR EYE CONTROLLER - ADAPTIVE SCANNING SYSTEM")
     print("="*80)
     
     try:
@@ -364,15 +575,16 @@ if __name__ == "__main__":
             print("📋 CAR EYE CONTROL MENU")
             print("="*40)
             print("1. Test Basic Movement")
-            print("2. Quick 3-Point Scan (Left-Center-Right)")
-            print("3. Full 4-Degree Scan")
-            print("4. Find Best Moving Direction")
+            print("2. Quick 3-Point Scan (Original)")
+            print("3. Full 4-Degree Scan (Original)")
+            print("4. Find Best Moving Direction (Original)")
             print("5. Custom Angle Scan")
             print("6. Reset to Center")
-            print("7. Exit")
+            print("7. Test Adaptive Scanning (NEW)")
+            print("8. Exit")
             print("="*40)
             
-            choice = input("\nSelect (1-7): ").strip()
+            choice = input("\nSelect (1-8): ").strip()
             
             if choice == '1':
                 test_basic_movement()
@@ -391,6 +603,8 @@ if __name__ == "__main__":
             elif choice == '6':
                 eye.reset()
             elif choice == '7':
+                test_adaptive_scan()
+            elif choice == '8':
                 print("\n👋 Shutting down...")
                 eye.reset()
                 break

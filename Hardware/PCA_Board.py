@@ -339,10 +339,13 @@ class PCA9685Controller:
         
         # Set PWM
         self.bus.write_byte_data(self.address, LED0_ON_L, 0)
+        time.sleep(0.01)
         self.bus.write_byte_data(self.address, LED0_ON_L + 1, 0)
+        time.sleep(0.01)
         self.bus.write_byte_data(self.address, LED0_ON_L + 2, pulse_value & 0xFF)
+        time.sleep(0.01)
         self.bus.write_byte_data(self.address, LED0_ON_L + 3, (pulse_value >> 8) & 0xFF)
-        
+        time.sleep(0.01)
         return pulse_us
     
     # ===== SERVO ACCESS METHODS =====

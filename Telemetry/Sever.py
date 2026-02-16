@@ -1,225 +1,159 @@
 #!/usr/bin/env python3
 """
-CAR CONTROL SERVER - WINDOWS VERSION
-Steering and throttle are INDEPENDENT
-No special Linux keyboard modules needed
+CAR SERVER - Windows/PC
+Displays live logs with error highlighting.
 """
 
 import socket
-import json
-import time
+import threading
 import sys
-import msvcrt  # Windows keyboard library
+import os
+import time
+from datetime import datetime
+from collections import deque
 
-class CarServer:
-    def __init__(self, pi_ip='192.168.1.100', port=9999):
-        self.pi_ip = pi_ip
-        self.port = port
-        self.socket = None
-        self.connected = False
-        
-        # Current state
-        self.current_speed = 0
-        self.current_steering = 90
-        
-    def connect(self):
-        """Connect to Raspberry Pi"""
-        try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(2)
-            self.socket.connect((self.pi_ip, self.port))
-            self.connected = True
-            print(f"✅ Connected to {self.pi_ip}:{self.port}")
-            
-            # Initialize car
-            self.send_command('steer', 90)
-            self.send_command('throttle', 0)
-            time.sleep(0.5)
-            
-            return True
-        except Exception as e:
-            print(f"❌ Connection failed: {e}")
-            return False
-    
-    def send_command(self, command_type, value):
-        """Send command to car"""
-        if not self.connected:
-            return "Not connected"
-            
-        try:
-            cmd = {'type': command_type, 'value': value}
-            self.socket.send(json.dumps(cmd).encode())
-            
-            # Get response
-            response = self.socket.recv(1024).decode()
-            return response
-            
-        except Exception as e:
-            self.connected = False
-            return f"Error: {e}"
-    
-    def windows_control(self):
-        """Windows keyboard control (no Linux dependencies)"""
-        print("\n" + "="*50)
-        print("CAR CONTROL - WINDOWS VERSION")
-        print("="*50)
-        print("Controls:")
-        print("  W - Increase speed (+2%)")
-        print("  S - Decrease speed (-2%)")
-        print("  A - Turn Left (2°)")
-        print("  D - Turn Right (2°)")
-        print("  SPACE - Stop (0% speed)")
-        print("  C - Center steering (90°)")
-        print("  E - Set 20% speed")
-        print("  R - Reset to 0% speed")
-        print("  X - Emergency stop")
-        print("  Q - Quit")
-        print("="*50)
-        print("Steering and speed are INDEPENDENT")
-        print("Press keys (no Enter needed)")
-        print("="*50)
-        
-        print(f"\n🚗 Ready! Current: Speed={self.current_speed:+3d}%, Steering={self.current_steering}°")
-        print("Tap keys to control...")
-        
-        last_key_time = 0
-        key_repeat_delay = 0.1  # 100ms between repeated key presses
-        
-        try:
-            while True:
-                # Check if key is pressed (Windows specific)
-                if msvcrt.kbhit():
-                    key = msvcrt.getch().decode('utf-8').lower()
-                    current_time = time.time()
-                    
-                    # Prevent too fast key repeats
-                    if current_time - last_key_time < key_repeat_delay:
-                        time.sleep(0.01)
-                        continue
-                    
-                    last_key_time = current_time
-                    
-                    # SPEED CONTROL
-                    if key == 'w':  # Increase speed
-                        self.current_speed = min(100, self.current_speed + 2)
-                        response = self.send_command('throttle', self.current_speed)
-                        print(f"\n⬆️  Speed: {self.current_speed:+3d}%")
-                        
-                    elif key == 's':  # Decrease speed
-                        self.current_speed = max(-100, self.current_speed - 2)
-                        response = self.send_command('throttle', self.current_speed)
-                        print(f"\n⬇️  Speed: {self.current_speed:+3d}%")
-                    
-                    # STEERING CONTROL (independent)
-                    elif key == 'a':  # Turn left
-                        self.current_steering = max(50, self.current_steering - 2)
-                        response = self.send_command('steer', self.current_steering)
-                        print(f"\n↖️  Steering: {self.current_steering:3d}°")
-                        
-                    elif key == 'd':  # Turn right
-                        self.current_steering = min(130, self.current_steering + 2)
-                        response = self.send_command('steer', self.current_steering)
-                        print(f"\n↗️  Steering: {self.current_steering:3d}°")
-                    
-                    # OTHER CONTROLS
-                    elif key == ' ':  # Space bar - Stop
-                        self.current_speed = 0
-                        response = self.send_command('throttle', 0)
-                        print(f"\n🛑 Stop! Speed: 0%")
-                        
-                    elif key == 'c':  # Center steering
-                        self.current_steering = 90
-                        response = self.send_command('steer', 90)
-                        print(f"\n🎯 Steering centered: 90°")
-                        
-                    elif key == 'e':  # Set 20% speed
-                        self.current_speed = 20
-                        response = self.send_command('throttle', 20)
-                        print(f"\n🚗 Speed set: 20%")
-                        
-                    elif key == 'r':  # Reset
-                        self.current_speed = 0
-                        self.current_steering = 90
-                        self.send_command('throttle', 0)
-                        self.send_command('steer', 90)
-                        time.sleep(0.1)
-                        print(f"\n🔄 Reset: Speed=0%, Steering=90°")
-                        
-                    elif key == 'x':  # Emergency stop
-                        self.current_speed = 0
-                        self.current_steering = 90
-                        response = self.send_command('emergency', 'stop')
-                        print(f"\n🛑 EMERGENCY STOP - Speed=0%, Steering=90°")
-                        
-                    elif key == 'q':  # Quit
-                        print("\n🛑 Quitting...")
-                        break
-                    
-                    # Show response
-                    try:
-                        resp_data = json.loads(response)
-                        if 'message' in resp_data:
-                            print(f"   Pi: {resp_data['message']}")
-                    except:
-                        pass
-                
-                # Small sleep to prevent CPU overload
-                time.sleep(0.01)
-                
-        except KeyboardInterrupt:
-            print("\n🛑 Interrupted")
-        finally:
-            self.close()
-    
-    def close(self):
-        """Close connection"""
-        if self.socket:
-            self.socket.close()
-            print("🔌 Connection closed")
+# ANSI color codes
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+    CLEAR = '\033[2J\033[H'  # Clear screen and home cursor
 
-def get_pi_ip():
-    """Ask user for Pi IP"""
-    print("\n" + "="*50)
-    print("CAR CONTROL SERVER SETUP")
-    print("="*50)
-    
-    # Try to auto-detect common Pi IPs
-    common_ips = ['192.168.1.100', '192.168.1.101', '192.168.0.100', '192.168.0.101']
-    
-    print("Common Raspberry Pi IP addresses:")
-    for i, ip in enumerate(common_ips, 1):
-        print(f"  {i}. {ip}")
-    print(f"  {len(common_ips)+1}. Enter custom IP")
-    
-    choice = input(f"\nSelect IP or enter custom: ").strip()
-    
-    if choice.isdigit() and 1 <= int(choice) <= len(common_ips):
-        return common_ips[int(choice) - 1]
-    elif choice.isdigit() and int(choice) == len(common_ips) + 1:
-        custom_ip = input("Enter Pi's IP address: ").strip()
-        return custom_ip
+LOG_FILE = "car_log.txt"
+open(LOG_FILE, 'w').close()
+
+# Store recent logs
+log_buffer = deque(maxlen=20)
+error_buffer = deque(maxlen=5)  # last 5 errors
+
+def listen_for_logs(conn, stop_event):
+    """Receive logs and update buffers."""
+    while not stop_event.is_set():
+        try:
+            conn.settimeout(0.5)
+            data = conn.recv(1024).decode().strip()
+            if data:
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                line = f"[{timestamp}] {data}"
+                log_buffer.append(line)
+                # If it's an error, also add to error buffer
+                if "ERROR" in data.upper():
+                    error_buffer.append(line)
+                with open(LOG_FILE, 'a') as f:
+                    f.write(line + "\n")
+        except socket.timeout:
+            continue
+        except:
+            break
+
+def clear_screen():
+    os.system('cls' if sys.platform == 'win32' else 'clear')
+
+def print_header(connected=True, last_cmd="None"):
+    print(f"{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.END}")
+    print(f"{Colors.BOLD}{Colors.GREEN}🚗 AUTONOMOUS CAR CONTROLLER{Colors.END}")
+    status = f"{Colors.GREEN}CONNECTED{Colors.END}" if connected else f"{Colors.RED}DISCONNECTED{Colors.END}"
+    print(f"Status: {status}  |  Last Command: {last_cmd}")
+    print(f"{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.END}")
+
+def print_logs():
+    """Display the last few log lines."""
+    print(f"\n{Colors.BOLD}{Colors.YELLOW}📋 Recent Logs:{Colors.END}")
+    if not log_buffer:
+        print("   No logs yet.")
     else:
-        # Assume it's a custom IP
-        return choice if '.' in choice else '192.168.1.100'
+        for line in list(log_buffer)[-8:]:  # Show last 8
+            # Color-code errors
+            if "ERROR" in line.upper():
+                print(f"   {Colors.RED}{line}{Colors.END}")
+            elif "start" in line.lower() or "resume" in line.lower():
+                print(f"   {Colors.GREEN}{line}{Colors.END}")
+            elif "stop" in line.lower() or "pause" in line.lower():
+                print(f"   {Colors.YELLOW}{line}{Colors.END}")
+            else:
+                print(f"   {Colors.END}{line}")
+
+def print_errors():
+    """Display recent errors."""
+    print(f"\n{Colors.BOLD}{Colors.RED}⚠️  Recent Errors:{Colors.END}")
+    if not error_buffer:
+        print("   No errors.")
+    else:
+        for line in error_buffer:
+            print(f"   {Colors.RED}{line}{Colors.END}")
+
+def print_menu():
+    print(f"\n{Colors.BOLD}{Colors.BLUE}Commands:{Colors.END}")
+    print(f"  {Colors.GREEN}[1] START{Colors.END} - Begin driving")
+    print(f"  {Colors.RED}[2] STOP{Colors.END}  - Pause driving")
+    print(f"  {Colors.YELLOW}[3] EXIT{Colors.END}  - Shutdown")
+    print(f"{Colors.BLUE}{'-'*60}{Colors.END}")
+
+def start_server(host='0.0.0.0', port=65432):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(1)
+    
+    clear_screen()
+    print_header(connected=False)
+    print(f"📡 Server listening on port {port}")
+    print("⏳ Waiting for Raspberry Pi to connect...\n")
+    
+    conn, addr = server.accept()
+    clear_screen()
+    last_cmd = "None"
+    print_header(connected=True, last_cmd=last_cmd)
+    print(f"✅ Connected to {addr}\n")
+    
+    stop_event = threading.Event()
+    threading.Thread(target=listen_for_logs, args=(conn, stop_event), daemon=True).start()
+    
+    try:
+        while True:
+            print_logs()
+            print_errors()
+            print_menu()
+            choice = input(f"{Colors.BOLD}Enter choice (1-3): {Colors.END}").strip()
+            
+            if choice == "1":
+                conn.sendall("start".encode())
+                last_cmd = "START"
+                log_buffer.append(f"[{datetime.now().strftime('%H:%M:%S')}] >>> Sent START")
+                clear_screen()
+                print_header(connected=True, last_cmd=last_cmd)
+                print(f"✅ Connected to {addr}\n")
+            elif choice == "2":
+                conn.sendall("stop".encode())
+                last_cmd = "STOP"
+                log_buffer.append(f"[{datetime.now().strftime('%H:%M:%S')}] >>> Sent STOP")
+                clear_screen()
+                print_header(connected=True, last_cmd=last_cmd)
+                print(f"✅ Connected to {addr}\n")
+            elif choice == "3":
+                conn.sendall("exit".encode())
+                print(f"\n{Colors.YELLOW}👋 Shutting down...{Colors.END}")
+                break
+            else:
+                print(f"{Colors.RED}❌ Invalid choice. Press Enter to continue...{Colors.END}")
+                input()
+                clear_screen()
+                print_header(connected=True, last_cmd=last_cmd)
+                print(f"✅ Connected to {addr}\n")
+    except KeyboardInterrupt:
+        conn.sendall("exit".encode())
+    finally:
+        stop_event.set()
+        conn.close()
+        server.close()
+        clear_screen()
+        print(f"{Colors.GREEN}✅ Server shutdown complete{Colors.END}\n")
 
 if __name__ == "__main__":
-    # Get Pi IP
-    PI_IP = get_pi_ip()
-    
-    print(f"\n🔗 Connecting to {PI_IP}:9999")
-    print("Make sure Raspberry Pi is running car_client.py")
-    print("-" * 50)
-    
-    server = CarServer(pi_ip=PI_IP, port=9999)
-    
-    if server.connect():
-        server.windows_control()
-    else:
-        print(f"\n❌ Couldn't connect to {PI_IP}:9999")
-        print("\nTroubleshooting:")
-        print("1. Check Pi is on same network")
-        print("2. Run car_client.py on Pi")
-        print("3. Check Windows Firewall allows connection")
-        print("4. Verify IP address is correct")
-        print("\nPress Enter to exit...")
-        input()
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 65432
+    start_server(port=port)

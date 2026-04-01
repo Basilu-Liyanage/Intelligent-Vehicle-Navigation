@@ -54,9 +54,8 @@ class TFLuna:
                         self.last_valid_distance = 8.0
                         return 8.0
                     
-                    distance_m = distance / 100.0
-                    self.last_valid_distance = distance_m
-                    return distance_m 
+                    self.last_valid_distance = distance
+                    return distance 
             
             time.sleep(0.1)
         
@@ -64,11 +63,9 @@ class TFLuna:
         return self.last_valid_distance if self.last_valid_distance > 0 else 0.0
     
     def read_distance(self):
-        """Alias for compatibility - uses your working method."""
         return self.get_distance_to_obstacle()
 
     def close(self):
-        """Closes the LIDAR sensor port."""
         if hasattr(self, 'lidar_port') and self.lidar_port.is_open:
             self.lidar_port.close()
             print("✓ TF-Luna disconnected")
@@ -79,7 +76,7 @@ if __name__ == "__main__":
     try:
         while True:
             distance = lidar.get_distance_to_obstacle()
-            print(f"Distance to obstacle: {distance:.2f} m")
+            print(f"Distance to obstacle: {distance:.2f} cm")
             time.sleep(0.5)
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")

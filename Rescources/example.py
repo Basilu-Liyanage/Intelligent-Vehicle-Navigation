@@ -1,25 +1,27 @@
-# Step 1: On your TRAINING computer (not the RPi), convert your model
-import torch
-import onnx
-import onnxruntime as ort
+# spirograph.py
+import turtle
+import colorsys
 
-# Load your trained model
-checkpoint = torch.load("AI/checkpoints_working/working_final.pth", map_location='cpu')
-model = checkpoint['model']
-model.eval()  # Set to evaluation mode
+def spirograph(turns=36, circle_radius=120):
+    screen = turtle.Screen()
+    screen.bgcolor("black")
+    screen.title("Spirograph")
 
-# Create a dummy input matching your state size (e.g., [batch_size, state_dim])
-dummy_input = torch.randn(1, 10)  # Adjust 10 to your actual state dimension
+    t = turtle.Turtle()
+    t.speed(0)
+    t.width(2)
+    t.hideturtle()
 
-# Export to ONNX format
-torch.onnx.export(
-    model,
-    dummy_input,
-    "sac_agent_576.onnx",
-    input_names=["state_input"],
-    output_names=["action_output"],
-    dynamic_axes={'state_input': {0: 'batch_size'}, 'action_output': {0: 'batch_size'}},
-    opset_version=14
-)
+    # generate a rainbow of colors
+    for i in range(turns):
+        hue = i / turns
+        r, g, b = [int(255*c) for c in colorsys.hsv_to_rgb(hue, 1, 1)]
+        screen.colormode(255)
+        t.pencolor(r, g, b)
+        t.circle(circle_radius)
+        t.right(360 / turns)
 
-print("✅ Model converted to sac_agent_576.onnx")
+    screen.exitonclick()
+
+if __name__ == "__main__":
+    spirograph(turns=72, circle_radius=100)

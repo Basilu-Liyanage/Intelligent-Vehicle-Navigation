@@ -20,7 +20,7 @@ class MultiAngleLiDAR:
         row = []
         for angle in self.angles:
             self.set_servo(angle)
-            time.sleep(0.1)  
+            time.sleep(0.09)  
             distance = self.lidar.read_distance()
             row.append(distance)
         return row

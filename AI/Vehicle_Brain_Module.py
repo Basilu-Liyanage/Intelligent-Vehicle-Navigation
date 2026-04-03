@@ -1,19 +1,13 @@
-# Vehicle_Brain_Module_pi_safe.py
+# Vehicle_Brain_NoSB3.py
 """
-Pi-safe Vehicle Brain Module
-Runs SAC autonomous driving on Raspberry Pi without matplotlib
+Raspberry Pi Safe Vehicle Brain
+No Stable Baselines3 required
 """
 
 import sys
 import time
-import types
 from pathlib import Path
-
-# ---------------- Monkeypatch matplotlib for SB3 ----------------
-fake_matplotlib = types.ModuleType("matplotlib")
-fake_matplotlib.figure = types.SimpleNamespace(Figure=lambda *a, **k: None)
-sys.modules["matplotlib"] = fake_matplotlib
-sys.modules["matplotlib.pyplot"] = types.SimpleNamespace()
+import numpy as np
 
 # ---------------- Add project path ----------------
 PROJECT_PATH = "/home/pi/Desktop/Intelligent-Vehicle-Navigation"
@@ -24,9 +18,6 @@ from Hardware.DC_Motor import DCMotor, MotorDirection
 from Hardware.PCA_Board import PCA9685
 from Hardware.Units.CarSteering import SteeringController
 from Hardware.Units.CarEye import MultiAngleLiDAR
-
-# ---------------- Stable Baselines3 ----------------
-from stable_baselines3 import SAC
 
 # ---------------- Initialize Hardware ----------------
 motor = DCMotor(
@@ -39,43 +30,51 @@ motor = DCMotor(
 
 pca = PCA9685()
 steering = SteeringController(pca, servo_channel=0, min_angle=60, max_angle=120)
-lidar_eye = MultiAngleLiDAR()  # Use for multi-angle obstacle scanning
+lidar_eye = MultiAngleLiDAR()  # Multi-angle LiDAR
 
-# ---------------- Load SAC model ----------------
-MODEL_PATH = Path(PROJECT_PATH) / "checkpoints" / "sac_demo_120000_steps.zip"
-model = SAC.load(str(MODEL_PATH))
+# ---------------- Load precomputed AI actions ----------------
+# Example: a NumPy array of [throttle, steering] pairs for simplicity
+# You can generate this offline with SAC and save as 'actions.npy'
+AI_ACTIONS_FILE = Path(PROJECT_PATH) / "checkpoints" / "actions.npy"
+if AI_ACTIONS_FILE.exists():
+    actions = np.load(AI_ACTIONS_FILE)
+    print(f"✅ Loaded {len(actions)} precomputed actions")
+else:
+    print("⚠️ No precomputed actions found, running dummy loop")
+    actions = np.array([[0.5, 0.0]] * 1000)  # Forward at 50%, center steering
+
+action_index = 0
 
 # ---------------- Control Loop ----------------
 def get_state_from_lidar():
-    """Return simplified state for AI: e.g., front distance + left/right distances"""
-    scan = lidar_eye.scan_row()  # returns distances for all angles
-    # Example: front, front-left, front-right
+    """Return simplified state for AI: front, left, right distances"""
+    scan = lidar_eye.scan_row()
     front = scan[len(scan)//2]
     left = scan[0]
     right = scan[-1]
     return [front, left, right]
 
 try:
-    print("🚗 Vehicle Brain Online. Starting autonomous control loop...")
+    print("🚗 Vehicle Brain Online. Starting control loop...")
     while True:
         state = get_state_from_lidar()
-        action, _ = model.predict(state, deterministic=True)
+        # ---------------- Get AI action ----------------
+        action = actions[action_index % len(actions)]
+        action_index += 1
 
-        # ---------------- Interpret SAC output ----------------
-        throttle = float(action[0])  # example: 0-1 forward speed
-        steer = float(action[1])     # example: -1 left to +1 right
+        throttle = float(action[0])  # 0-1 forward
+        steer = float(action[1])     # -1 to +1
 
-        # Motor control
+        # ---------------- Motor control ----------------
         if throttle >= 0:
             motor.move_forward(min(throttle * 100, 100))
         else:
             motor.move_reverse(min(-throttle * 100, 100))
 
-        # Steering control
-        current_angle = 90 + int(steer * 30)  # scale -1:+1 -> 60:120 deg
+        # ---------------- Steering control ----------------
+        current_angle = 90 + int(steer * 30)  # -1:+1 -> 60:120 deg
         steering.set_angle(current_angle)
 
-        # Small delay for Pi
         time.sleep(0.05)
 
 except KeyboardInterrupt:

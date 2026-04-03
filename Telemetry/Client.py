@@ -1,67 +1,78 @@
 import socket
 import threading
 import json
-import time
-import sys
-
-sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
-from AI.Vehicle_Brain_Module import Vehicle_Brain_Module
 from LOG.Logger import IndustrialLogger
 
-SERVER_IP = "192.168.1.4"  # Put your server IP here
 SERVER_PORT = 9999
+server_logger = IndustrialLogger("Server_Log.json")
 
-# ---------------- CLIENT LOGGER ----------------
-client_logger = IndustrialLogger("Client_Log.json")
+# Connected clients
+clients = []
 
-# ---------------- NETWORK THREAD ----------------
-def network_sender(sock, queue):
-    while True:
-        try:
-            log_entry = queue.get()
-            data_str = json.dumps(log_entry)
-            sock.sendall(data_str.encode() + b"\n")
-        except Exception as e:
-            print(f"[Network Error] {e}")
-            time.sleep(1)
+def handle_client(conn, addr):
+    print(f"[Server] Connected by {addr}")
+    clients.append(conn)
+    buffer = ""
 
-
-# ---------------- MAIN CLIENT ----------------
-def main():
-    # Connect to server
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((SERVER_IP, SERVER_PORT))
-    print(f"[Client] Connected to server at {SERVER_IP}:{SERVER_PORT}")
-
-    # Create vehicle with logger callback
-    vehicle = Vehicle_Brain_Module(logger=client_logger)
-
-    # Start network sender thread
-    network_thread = threading.Thread(target=network_sender, args=(sock, vehicle.logger.network_queue), daemon=True)
-    network_thread.start()
-
-    # Listen for server commands (start/stop driving)
-    def server_listener():
+    try:
         while True:
-            try:
-                msg = sock.recv(1024).decode().strip()
-                if msg == "START":
-                    print("[Client] Received START command")
-                    vehicle.running = True
-                    threading.Thread(target=vehicle.drive, daemon=True).start()
-                elif msg == "STOP":
-                    print("[Client] Received STOP command")
-                    vehicle.running = False
-            except Exception as e:
-                print(f"[Listener Error] {e}")
-                time.sleep(1)
+            data = conn.recv(1024)
+            if not data:
+                break
 
-    listener_thread = threading.Thread(target=server_listener, daemon=True)
-    listener_thread.start()
+            buffer += data.decode()
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                try:
+                    log_entry = json.loads(line)
+                    # Avoid duplicate message keys
+                    entry_data = log_entry.copy()
+                    entry_data["client_message"] = entry_data.pop("message", "")
+                    server_logger.info("Client log", **entry_data)
+                    server_logger.flush()
+                except json.JSONDecodeError:
+                    print(f"[Server] Invalid JSON: {line}")
 
-    # Keep main thread alive
+    except Exception as e:
+        print(f"[Server] Error: {e}")
+    finally:
+        conn.close()
+        clients.remove(conn)
+        print(f"[Server] Connection closed {addr}")
+
+# Command sender thread
+def command_sender():
     while True:
-        time.sleep(1)
+        cmd = input("[Server Command] START / STOP / EXIT: ").strip().upper()
+        if cmd not in ["START", "STOP", "EXIT"]:
+            print("Invalid command")
+            continue
+        for c in clients:
+            try:
+                c.sendall((cmd + "\n").encode())
+            except:
+                pass
+        if cmd == "EXIT":
+            print("Shutting down server...")
+            break
+
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("", SERVER_PORT))
+    sock.listen()
+    print(f"[Server] Listening on port {SERVER_PORT}")
+
+    threading.Thread(target=command_sender, daemon=True).start()
+
+    try:
+        while True:
+            conn, addr = sock.accept()
+            threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+    except KeyboardInterrupt:
+        print("Server stopped")
+    finally:
+        sock.close()
+        server_logger.flush()
 
 if __name__ == "__main__":
     main()

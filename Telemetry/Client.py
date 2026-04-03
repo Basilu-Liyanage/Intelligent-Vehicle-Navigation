@@ -5,11 +5,11 @@ import time
 import queue
 import sys
 
-sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
+sys.path.append(r'C:\Users\user_\OneDrive\Documents\Intelligent-Vehicle-Navigation')
 from LOG.Logger import IndustrialLogger
-from Vehicle_Brain_Module import Vehicle_Brain_Module
+from AI.Vehicle_Brain_Module import Vehicle_Brain_Module
 
-SERVER_IP = "192.168.1.100"  # Replace with your server IP
+SERVER_IP = "192.168.1.4"  # Replace with your server IP
 SERVER_PORT = 9999
 
 # ---------------- QUEUE & LOGGER ----------------

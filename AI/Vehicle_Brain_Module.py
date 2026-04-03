@@ -1,7 +1,6 @@
 import sys
 import time
 import threading
-import math
 
 sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
 
@@ -21,11 +20,11 @@ class Vehicle_Brain_Module:
         self.LiDAR = TFLuna()
 
         # Config
-        self.MINIMUM_GAP = 20
+        self.MINIMUM_GAP = 22
         self.MID_GAP = 50
         self.HIGH_GAP = 100
 
-        self.driver_center_angle = 35   # Logical (0-60)
+        self.driver_center_angle = 35
         self.eye_center_angle = 125
 
         self.running = False
@@ -36,35 +35,32 @@ class Vehicle_Brain_Module:
         self.current_steering = self.driver_center_angle
         self.target_steering = self.driver_center_angle
 
+        # Turn control
         self.turning = False
         self.turn_start_time = 0
         self.turn_wait_time = 0
 
-    # ====================== STEERING MAPPING ======================
-    def _logical_to_physical(self, logical_angle: float) -> int:
-        """Convert logical driver angle (0-60) to physical servo angle (60-120)"""
-        physical = 60 + logical_angle
+        # Scan control - Prevent loop scanning
+        self.last_scan_time = 0
+        self.SCAN_COOLDOWN = 3.0   # seconds
+
+    def _logical_to_physical(self, logical: float) -> int:
+        physical = 60 + logical
         return max(60, min(120, round(physical)))
 
     def _set_steering(self, logical_angle: float):
-        physical_angle = self._logical_to_physical(logical_angle)
-        self.CarSteering.set_angle(physical_angle)
-        print(f"[STEERING] Logical: {logical_angle:.1f}° → Physical: {physical_angle}°")
+        physical = self._logical_to_physical(logical_angle)
+        self.CarSteering.set_angle(physical)
+        print(f"[STEERING] Logical {logical_angle:.1f}° → Physical {physical}°")
 
-    # ====================== TURN TIME CALCULATION ======================
     def estimate_turn_wait_time(self, steering_angle: float, speed_percent: float = 50) -> float:
-        """Calculate how long to wait for the vehicle to turn"""
         if speed_percent < 10:
             return 0.8
-        
-        sharpness_factor = abs(steering_angle - 35) / 25.0 + 0.6
-        base_time = 1.8 * sharpness_factor
+        sharpness = abs(steering_angle - 35) / 25.0 + 0.6
+        base_time = 1.8 * sharpness
         speed_factor = 60.0 / max(20, speed_percent)
-        
-        wait_time = base_time * speed_factor
-        return round(wait_time, 2)
+        return round(base_time * speed_factor, 2)
 
-    # ====================== EYE TO STEERING ======================
     @staticmethod
     def eye_to_steering(eye_angle: float) -> float:
         if eye_angle <= 125:
@@ -73,21 +69,19 @@ class Vehicle_Brain_Module:
             driver_angle = 35 - (eye_angle - 125) * 7 / 15
         return max(0, min(60, round(driver_angle, 2)))
 
-    # ====================== MAIN DRIVE LOOP ======================
     def drive(self):
         with self.lock:
             self.running = True
-            print("🚗 Vehicle Brain Started")
+            print("🚗 Vehicle Started - Scan Cooldown Active")
 
         try:
             while self.running:
-                # Read center distance
                 self.CarEye.set_servo(self.eye_center_angle)
                 time.sleep(0.08)
-                
+
                 distance_center = self.LiDAR.read_distance()
 
-                # Update target speed
+                # Speed Control
                 if distance_center < self.MINIMUM_GAP:
                     self.target_speed = 0
                 elif distance_center < self.MID_GAP:
@@ -97,7 +91,7 @@ class Vehicle_Brain_Module:
                 else:
                     self.target_speed = 100
 
-                # Apply speed
+                # Apply Speed
                 if self.target_speed <= 5:
                     self.CarEngine.stop()
                     self.current_speed = 0
@@ -105,37 +99,37 @@ class Vehicle_Brain_Module:
                     self.CarEngine.move_forward(self.target_speed)
                     self.current_speed = self.target_speed
 
-                # === PATH BLOCKED → SCAN AND TURN ===
-                if distance_center < self.MINIMUM_GAP:
-                    print(f"🛑 Blocked! ({distance_center:.1f}cm) - Scanning...")
-                    self.CarEngine.stop()
-                    self.current_speed = 0
+                # === SCAN ONLY WHEN NEEDED + COOLDOWN ===
+                current_time = time.time()
+                can_scan = (current_time - self.last_scan_time) > self.SCAN_COOLDOWN
 
+                if distance_center < self.MINIMUM_GAP and can_scan:
+                    print(f"🛑 Blocked ({distance_center:.1f}cm) → Scanning...")
+                    self.last_scan_time = current_time
+                    
+                    self.CarEngine.stop()
                     best_eye_angle, best_distance = self.CarEye.scan_row()
 
-                    if best_distance < self.MINIMUM_GAP * 1.5:
-                        print("❌ No safe path → Emergency Reverse")
-                        self.CarEngine.move_reverse(40)
-                        time.sleep(1.2)
+                    if best_distance < self.MINIMUM_GAP * 1.6:
+                        print("❌ No safe path → Reverse")
+                        self.CarEngine.move_reverse(45)
+                        time.sleep(1.3)
                         self.CarEngine.stop()
                     else:
                         driver_angle = self.eye_to_steering(best_eye_angle)
-                        print(f"🎯 Best direction: Eye {best_eye_angle}° → Driver {driver_angle}°")
+                        print(f"🎯 Turning → Eye {best_eye_angle}° | Driver {driver_angle}°")
 
-                        # Start turning
                         self.target_steering = driver_angle
                         self._set_steering(driver_angle)
-                        
+
                         self.turning = True
                         self.turn_start_time = time.time()
                         self.turn_wait_time = self.estimate_turn_wait_time(driver_angle, self.current_speed)
 
-                        print(f"⏳ Waiting {self.turn_wait_time} seconds for turn...")
-
-                # === CHECK IF TURN IS COMPLETE ===
+                # === FINISH TURN ===
                 if self.turning:
                     if time.time() - self.turn_start_time >= self.turn_wait_time:
-                        print("✅ Turn completed - Centering steering")
+                        print("✅ Turn completed → Centering wheels")
                         self._set_steering(self.driver_center_angle)
                         self.turning = False
 
@@ -152,10 +146,9 @@ class Vehicle_Brain_Module:
         self.CarEngine.stop()
         self._set_steering(self.driver_center_angle)
         self.CarEye.set_servo(self.eye_center_angle)
-        print("🛑 Vehicle Stopped Safely")
+        print("🛑 Vehicle Stopped")
 
 
-# ====================== RUN ======================
 if __name__ == "__main__":
     vehicle = Vehicle_Brain_Module()
     try:

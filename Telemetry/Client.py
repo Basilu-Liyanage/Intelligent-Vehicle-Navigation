@@ -6,7 +6,7 @@ import json
 
 sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
 
-from LOG.Logger import IndustrialLogger
+from industrial_logger import IndustrialLogger
 from Hardware.Lidar_Sensor import TFLuna
 from Hardware.DC_Motor import DCMotor
 from Hardware.PCA_Board import PCA9685

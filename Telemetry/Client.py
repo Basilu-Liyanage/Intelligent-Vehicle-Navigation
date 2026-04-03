@@ -13,7 +13,7 @@ from AI.Vehicle_Brain_Module import Vehicle_Brain_Module
 driver = Vehicle_Brain_Module()
 SERVER_IP = "192.168.1.4"   # 🔁 CHANGE to your laptop IP
 PORT = 5000
-CLIENT_LOG_FILE = "client_log.txt"  # Path to client log file
+CLIENT_LOG_FILE = "Client_Log.json"  # Path to client log file
 
 class VehicleClient:
     def __init__(self, vehicle):

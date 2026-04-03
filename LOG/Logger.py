@@ -6,7 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 class IndustrialLogger:
-    def __init__(self, filename="client_log.json", max_bytes=1_000_000, backup_count=5):
+    def __init__(self, filename="Client_Log.json", max_bytes=1_000_000, backup_count=5):
         self.file_queue = queue.Queue()
         self.network_queue = queue.Queue()
 

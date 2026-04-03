@@ -9,13 +9,14 @@ from Hardware.DC_Motor import DCMotor
 from Hardware.Units.CarSteering import SteeringController
 
 # ================= CONFIG =================
-FRONT_CLEAR = 80         # cm, distance to drive straight
-FRONT_STOP = 25          # cm, emergency stop
-MAX_SPEED = 100           # max speed %
+FRONT_CLEAR = 80        # cm
+FRONT_STOP = 25         # cm
+MAX_SPEED = 100
 MIN_SPEED = 20
 EYE_CHANNEL = 1
 CENTER_EYE_ANGLE = 125
-SCAN_RANGE = [90, 80, 100, 70, 110]  # angles to scan left/right around front
+SCAN_RANGE = [100, 110, 115, 135, 140]  # Only scan when needed
+LOOP_DELAY = 0.09       # Avoid PCA crashing
 
 # ================= INIT =================
 pca = PCA9685()
@@ -38,19 +39,20 @@ def adaptive_speed(distance):
     elif distance < FRONT_STOP:
         return 0
     else:
-        # Linear speed scaling
         return int(MIN_SPEED + (distance - FRONT_STOP) / (FRONT_CLEAR - FRONT_STOP) * (MAX_SPEED - MIN_SPEED))
 
 def weighted_steering():
-    """Scan around front, return proportional steering angle"""
-    left_sum = 0
-    right_sum = 0
-    left_count = 0
-    right_count = 0
+    """Scan sides only if front is near obstacle"""
+    front = read_front()
+    if front > FRONT_CLEAR:
+        return 35  # center
+
+    left_sum, right_sum = 0, 0
+    left_count, right_count = 0, 0
 
     for angle in SCAN_RANGE:
         pca.channel_map[EYE_CHANNEL].rotate(angle)
-        time.sleep(0.03)
+        time.sleep(0.05)  # slower per step
         dist = lidar.read_distance()
 
         if angle < CENTER_EYE_ANGLE:
@@ -60,14 +62,12 @@ def weighted_steering():
             right_sum += dist
             right_count += 1
 
-    # Center LiDAR
     pca.channel_map[EYE_CHANNEL].rotate(CENTER_EYE_ANGLE)
 
-    # Average distances
     left_avg = left_sum / left_count if left_count else 0
     right_avg = right_sum / right_count if right_count else 0
 
-    # Proportional steering: 0=left, 60=right
+    # Proportional steering 0=left, 60=right
     if left_avg + right_avg == 0:
         return 35
     steering_angle = 35 + int((right_avg - left_avg) / (left_avg + right_avg) * 25)
@@ -90,15 +90,13 @@ try:
         speed = adaptive_speed(front)
         motor.move_forward(speed)
 
-        if front > FRONT_CLEAR:
-            steering.center()
-            last_steering = 35
-        else:
-            angle = weighted_steering()
+        # Adjust steering smoothly
+        angle = weighted_steering()
+        if abs(angle - last_steering) > 3:  # smooth change
             steering.set_angle(angle)
             last_steering = angle
 
-        time.sleep(0.03)
+        time.sleep(LOOP_DELAY)
 
 except KeyboardInterrupt:
     print("\nStopping vehicle")

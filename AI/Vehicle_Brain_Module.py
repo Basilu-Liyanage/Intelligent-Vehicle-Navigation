@@ -105,7 +105,7 @@ class Vehicle_Brain_Module:
 
     def estimate_turn_duration(self, driver_angle):
         angle_diff = abs(driver_angle - self.driver_center_angle)
-        duration = 0.5 + (angle_diff / 60.0) * 1.5
+        duration = 1 + (angle_diff / 60.0) * 1.5
         return duration
 
     # ================= REVERSE =================

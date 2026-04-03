@@ -1,6 +1,9 @@
 import socket
 import threading
 import json
+
+import sys
+sys.path.append(r'C:\Users\user_\OneDrive\Documents\Intelligent-Vehicle-Navigation')
 from LOG.Logger import IndustrialLogger
 
 SERVER_IP = ""  # empty = all interfaces

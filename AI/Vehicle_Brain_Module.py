@@ -10,7 +10,7 @@ from Hardware.DC_Motor import DCMotor, MotorDirection
 # ---------------- INITIALIZE ----------------
 motor = DCMotor(rpwm_pin=4, lpwm_pin=17, ren_pin=27, len_pin=22)
 pca = PCA9685()
-steering = SteeringController(pca, servo_channel=0, min_angle=60, max_angle=120)
+steering = SteeringController(pca, servo_channel=0, min_angle=0, max_angle=60)
 lidar_eye = MultiAngleLiDAR()
 lidar_eye.pca = pca
 
@@ -18,7 +18,7 @@ lidar_eye.pca = pca
 FRONT_STOP = 25         # cm, immediate stop
 MAX_SPEED = 50          # %
 STEERING_CENTER = 90
-STEERING_MIN, STEERING_MAX = 60, 120
+STEERING_MIN, STEERING_MAX = 0, 60
 SCAN_INTERVAL = 0.03    # 30ms → faster reaction
 
 # ---------------- HELPER ----------------

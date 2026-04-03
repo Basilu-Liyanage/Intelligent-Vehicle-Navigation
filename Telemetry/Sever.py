@@ -7,7 +7,7 @@ from datetime import datetime
 
 HOST = "0.0.0.0"
 PORT = 5000
-SERVER_LOG_FILE = "server_log.txt"
+SERVER_LOG_FILE = "Server_Log.json"
 
 class VehicleServer:
     def __init__(self):

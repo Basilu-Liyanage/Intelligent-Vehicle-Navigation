@@ -1,29 +1,34 @@
-# Vehicle_Brain_Module.py
+# Vehicle_Brain_Module_pi_safe.py
+"""
+Pi-safe Vehicle Brain Module
+Runs SAC autonomous driving on Raspberry Pi without matplotlib
+"""
+
 import sys
-import os
 import time
 import types
-import numpy as np
+from pathlib import Path
 
-# -------------------- BYPASS MATPLOTLIB --------------------
-# SB3 imports matplotlib for logging; Pi environment fails
-os.environ["MPLBACKEND"] = "Agg"  # prevent GUI backend
-sys.modules['matplotlib'] = types.ModuleType('matplotlib')
-sys.modules['matplotlib.pyplot'] = types.ModuleType('pyplot')
-sys.modules['matplotlib.figure'] = types.ModuleType('figure')
+# ---------------- Monkeypatch matplotlib for SB3 ----------------
+fake_matplotlib = types.ModuleType("matplotlib")
+fake_matplotlib.figure = types.SimpleNamespace(Figure=lambda *a, **k: None)
+sys.modules["matplotlib"] = fake_matplotlib
+sys.modules["matplotlib.pyplot"] = types.SimpleNamespace()
 
-# -------------------- IMPORTS --------------------
-sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
+# ---------------- Add project path ----------------
+PROJECT_PATH = "/home/pi/Desktop/Intelligent-Vehicle-Navigation"
+sys.path.append(PROJECT_PATH)
 
-from Hardware.PCA_Board import PCA9685
-from Hardware.Lidar_Sensor import TFLuna
+# ---------------- Hardware imports ----------------
 from Hardware.DC_Motor import DCMotor, MotorDirection
+from Hardware.PCA_Board import PCA9685
 from Hardware.Units.CarSteering import SteeringController
 from Hardware.Units.CarEye import MultiAngleLiDAR
 
-from stable_baselines3 import SAC  # Your model
+# ---------------- Stable Baselines3 ----------------
+from stable_baselines3 import SAC
 
-# -------------------- INIT HARDWARE --------------------
+# ---------------- Initialize Hardware ----------------
 motor = DCMotor(
     rpwm_pin=4,
     lpwm_pin=17,
@@ -34,70 +39,49 @@ motor = DCMotor(
 
 pca = PCA9685()
 steering = SteeringController(pca, servo_channel=0, min_angle=60, max_angle=120)
-eye = MultiAngleLiDAR()
+lidar_eye = MultiAngleLiDAR()  # Use for multi-angle obstacle scanning
 
-# -------------------- LOAD MODEL --------------------
-MODEL_PATH = '/home/pi/Desktop/Intelligent-Vehicle-Navigation/checkpoints/sac_demo_120000_steps.zip'
-model = SAC.load(MODEL_PATH)
+# ---------------- Load SAC model ----------------
+MODEL_PATH = Path(PROJECT_PATH) / "checkpoints" / "sac_demo_120000_steps.zip"
+model = SAC.load(str(MODEL_PATH))
 
-# -------------------- HELPER FUNCTIONS --------------------
-def normalize_scan(scan):
-    """Convert distances to normalized 0-1"""
-    return [min(d / 800.0, 1.0) for d in scan]  # assuming max lidar 800 cm
+# ---------------- Control Loop ----------------
+def get_state_from_lidar():
+    """Return simplified state for AI: e.g., front distance + left/right distances"""
+    scan = lidar_eye.scan_row()  # returns distances for all angles
+    # Example: front, front-left, front-right
+    front = scan[len(scan)//2]
+    left = scan[0]
+    right = scan[-1]
+    return [front, left, right]
 
-def safety_check(front_distance_cm):
-    """Stop if obstacle too close"""
-    if front_distance_cm < 15:  # 15 cm safe distance
-        motor.stop()
-        steering.center()
-        return False
-    return True
-
-def get_observation():
-    """Returns model input"""
-    scan = eye.scan_row()[:8]          # Take first 8 angles
-    scan_norm = normalize_scan(scan)
-    steer_norm = (steering.get_current_angle() - 60) / 60  # normalize to 0-1
-    obs = np.array(scan_norm + [steer_norm], dtype=np.float32)
-    return obs
-
-# -------------------- MAIN LOOP --------------------
 try:
-    print("🚗 Vehicle AI starting...")
+    print("🚗 Vehicle Brain Online. Starting autonomous control loop...")
     while True:
-        obs = get_observation()
-        front_distance = eye.scan_row()[0]  # front-most LiDAR
+        state = get_state_from_lidar()
+        action, _ = model.predict(state, deterministic=True)
 
-        if not safety_check(front_distance):
-            time.sleep(0.1)
-            continue
+        # ---------------- Interpret SAC output ----------------
+        throttle = float(action[0])  # example: 0-1 forward speed
+        steer = float(action[1])     # example: -1 left to +1 right
 
-        action, _states = model.predict(obs, deterministic=True)
-        throttle, steer_delta = action
-
-        # -------------------- APPLY ACTIONS --------------------
-        # Steering
-        current_angle = steering.get_current_angle()
-        new_angle = current_angle + int(steer_delta * 10)  # scale small steps
-        steering.set_angle(new_angle)
-
-        # Motor
-        if throttle > 0:
-            motor.move_forward(min(max(throttle * 100, 10), 100))  # scale 0-1 → 10-100%
+        # Motor control
+        if throttle >= 0:
+            motor.move_forward(min(throttle * 100, 100))
         else:
-            motor.move_reverse(min(max(-throttle * 100, 10), 100))
+            motor.move_reverse(min(-throttle * 100, 100))
 
-        time.sleep(0.05)  # 20Hz control loop
+        # Steering control
+        current_angle = 90 + int(steer * 30)  # scale -1:+1 -> 60:120 deg
+        steering.set_angle(current_angle)
+
+        # Small delay for Pi
+        time.sleep(0.05)
 
 except KeyboardInterrupt:
-    print("\n🛑 Stopping vehicle...")
+    print("\n🛑 Shutdown requested by user")
+finally:
     motor.emergency_stop()
     steering.center()
     pca.reset()
-    print("Shutdown complete.")
-
-except Exception as e:
-    print(f"\n❌ ERROR: {e}")
-    motor.emergency_stop()
-    steering.center()
-    pca.reset()
+    print("✅ All hardware safely stopped")

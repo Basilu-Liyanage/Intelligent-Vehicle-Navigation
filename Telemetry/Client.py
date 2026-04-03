@@ -1,19 +1,20 @@
 import socket
 import threading
-import sys
 import time
-
+import sys
 sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
 
 from AI.Vehicle_Brain_Module import Vehicle_Brain_Module
+
 driver = Vehicle_Brain_Module()
-SERVER_IP = "192.168.1.100"   # 🔁 CHANGE to your laptop IP
+SERVER_IP = "192.168.1.4"   # 🔁 CHANGE to your laptop IP
 PORT = 5000
 
 
 class VehicleClient:
     def __init__(self, vehicle):
         self.vehicle = vehicle
+        self.driver = driver
         self.running = False
         self.drive_thread = None
 
@@ -59,3 +60,7 @@ class VehicleClient:
                 print(f"❌ Connection error: {e}")
                 print("🔄 Reconnecting in 3s...")
                 time.sleep(3)
+
+if __name__ == "__main__":
+    client = VehicleClient(driver)
+    client.connect()

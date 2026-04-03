@@ -2,6 +2,9 @@ import socket
 import threading
 import json
 import time
+import sys
+
+sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
 from AI.Vehicle_Brain_Module import Vehicle_Brain_Module
 from LOG.Logger import IndustrialLogger
 

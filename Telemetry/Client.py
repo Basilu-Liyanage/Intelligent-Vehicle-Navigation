@@ -1,87 +1,75 @@
 import socket
 import threading
 import json
+import time
+import sys
+
+sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
+from AI.Vehicle_Brain_Module import Vehicle_Brain_Module
 from LOG.Logger import IndustrialLogger
 
-SERVER_IP = ""  # empty = all interfaces
+SERVER_IP = "192.168.0.10"  # replace with your server IP
 SERVER_PORT = 9999
 
-# ---------------- SERVER LOGGER ----------------
-server_logger = IndustrialLogger("Server_Log.json")
+# ---------------- CLIENT LOGGER ----------------
+client_logger = IndustrialLogger("Client_Log.json")
 
-clients = []
+vehicle = Vehicle_Brain_Module(log_callback=lambda data: client_logger.info("Vehicle event", **data))
 
-# ---------------- CLIENT HANDLER ----------------
-def handle_client(conn, addr):
-    print(f"[Server] Connected by {addr}")
-    server_logger.info("Client connected", client=str(addr))
-    clients.append(conn)
+connected = False
+start_driving = False
+sock = None
 
-    buffer = ""
+# ---------------- NETWORK THREAD ----------------
+def network_thread():
+    global connected, start_driving, sock
     while True:
+        if not connected:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((SERVER_IP, SERVER_PORT))
+                connected = True
+                print(f"[Client] Connected to server {SERVER_IP}:{SERVER_PORT}")
+                client_logger.info("Connected to server")
+            except Exception as e:
+                print(f"[Client] Connection failed: {e}. Retrying in 3s...")
+                time.sleep(3)
+                continue
+
         try:
-            data = conn.recv(1024)
-            if not data:
-                break
-
-            buffer += data.decode()
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                try:
-                    log_entry = json.loads(line)
-                    server_logger.info("Client log", **log_entry)
-                except json.JSONDecodeError:
-                    print(f"[Server] Invalid JSON from client: {line}")
-
+            data = sock.recv(1024).decode().strip()
+            if data == "START":
+                print("[Client] Received START command")
+                start_driving = True
+            elif data == "STOP":
+                print("[Client] Received STOP command")
+                start_driving = False
+            time.sleep(0.1)
         except Exception as e:
-            print(f"[Server] Error with {addr}: {e}")
-            break
+            print(f"[Client] Network error: {e}")
+            connected = False
+            start_driving = False
+            sock.close()
+            time.sleep(2)
 
-    conn.close()
-    clients.remove(conn)
-    print(f"[Server] Connection closed {addr}")
-    server_logger.info("Client disconnected", client=str(addr))
-
-
-def send_command_to_all(command):
-    """Send START/STOP to all connected clients"""
-    message = command + "\n"
-    for c in clients:
-        try:
-            c.send(message.encode())
-        except Exception as e:
-            print(f"[Server] Failed to send to client: {e}")
-
-
-def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind((SERVER_IP, SERVER_PORT))
-    sock.listen()
-    print(f"[Server] Waiting for connections on port {SERVER_PORT}...")
-
-    threading.Thread(target=lambda: command_input_loop(), daemon=True).start()
-
+# ---------------- LOG SENDER ----------------
+def send_logs():
+    global connected, sock
     while True:
-        conn, addr = sock.accept()
-        threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
-
-
-def command_input_loop():
-    """Command line to send START/STOP"""
-    while True:
-        cmd = input("Enter command (START/STOP/EXIT): ").strip().upper()
-        if cmd in ["START", "STOP"]:
-            send_command_to_all(cmd)
-            print(f"[Server] Sent {cmd} to all clients")
-        elif cmd == "EXIT":
-            print("[Server] Exiting...")
-            for c in clients:
-                try: c.close()
-                except: pass
-            exit(0)
+        if connected:
+            while not vehicle.log_callback is None:
+                time.sleep(0.1)
         else:
-            print("Unknown command. Use START, STOP, or EXIT.")
+            time.sleep(1)
 
+# ---------------- MAIN LOOP ----------------
+threading.Thread(target=network_thread, daemon=True).start()
+threading.Thread(target=send_logs, daemon=True).start()
 
-if __name__ == "__main__":
-    main()
+print("[Client] Waiting for START command from server...")
+
+while True:
+    if start_driving:
+        vehicle.drive()  # This will run until stopped
+    else:
+        time.sleep(0.1)

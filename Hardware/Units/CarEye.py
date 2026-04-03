@@ -17,11 +17,22 @@ class MultiAngleLiDAR:
         self.pca.channel_map[self.eye_servo_channel].rotate(angle)
 
     def scan_row(self):
-        row = []
+        """Scan all angles and return the angle with the BEST (closest) distance"""
+        best_angle = None
+        best_distance = float('inf')   # Start with very large number
+        distances = []                 # Optional: keep all data
+
         for angle in self.angles:
             self.set_servo(angle)
-            time.sleep(0.09)  
+            time.sleep(0.09)           # Wait for servo to settle
+            
             distance = self.lidar.read_distance()
-            row.append(distance)
-        return row
+            distances.append((angle, distance))
+            
+            # Update best if this distance is closer
+            if distance < best_distance:
+                best_distance = distance
+                best_angle = angle
 
+        print(f"Best angle: {best_angle}° | Distance: {best_distance} cm")
+        return best_angle, best_distance 

@@ -16,9 +16,7 @@ class Vehicle_Brain_Module:
         self.PCABoard = PCA9685()
         
         self.CarEngine = DCMotor(rpwm_pin=4, lpwm_pin=17, ren_pin=27, len_pin=22, motor_name="MainDrive")
-        self.CarSteering = SteeringController(self.PCABoard, servo_channel=0, 
-                                            min_angle=60, max_angle=120)
-        
+        self.CarSteering = SteeringController(self.PCABoard, servo_channel=0, min_angle=60, max_angle=120)
         self.CarEye = MultiAngleLiDAR()
         self.LiDAR = TFLuna()
 
@@ -27,53 +25,55 @@ class Vehicle_Brain_Module:
         self.MID_GAP = 50
         self.HIGH_GAP = 100
 
-        self.driver_center = 35          # Logical 0-60
+        self.driver_center_angle = 35          # logical 0-60
         self.eye_center_angle = 125
 
-        self.MAX_STEER_CHANGE = 8
-        self.SCAN_EVERY = 8              # Scan quite often
+        self.MAX_STEER_CHANGE = 7
+        self.SPEED_RAMP_TIME = 0.8
+        self.SCAN_EVERY = 9                    # scan ~every 0.7-0.8 seconds
 
         self.running = False
         self.lock = threading.Lock()
 
         self.current_speed = 0
         self.target_speed = 0
-        self.current_driver_angle = self.driver_center   # 0-60 logical
-        self.target_driver_angle = self.driver_center
+        self.current_steering = self.driver_center_angle   # logical 0-60
+        self.target_steering = self.driver_center_angle
 
         self.scan_counter = 0
 
-        # Initialize steering to center
-        self._set_steering(self.driver_center)
+        # Safe start with correct physical servo angle
+        self._set_steering(self.current_steering)
+        self.CarEye.set_servo(self.eye_center_angle)
+
+    def _logical_to_physical(self, logical_angle: float) -> int:
+        """CRITICAL FIX: logical driver (0-60) → physical servo (60-120)"""
+        physical = 60 + logical_angle          # 0 → 60, 35 → 95, 60 → 120
+        return max(60, min(120, round(physical)))
+
+    def _set_steering(self, logical_angle: float):
+        """Helper to always send the correct physical angle to servo"""
+        physical = self._logical_to_physical(logical_angle)
+        self.CarSteering.set_angle(physical)
+        print(f"   → Steering command: logical {logical_angle:.1f}° → physical {physical}°")
 
     @staticmethod
     def eye_to_steering(eye_angle: float) -> float:
         if eye_angle <= 125:
-            d = 35 + (125 - eye_angle) / 3
+            driver_angle = 35 + (125 - eye_angle) / 3
         else:
-            d = 35 - (eye_angle - 125) * 7 / 15
-        return max(0, min(60, round(d, 2)))
-
-    def _driver_to_servo(self, driver_angle: float) -> float:
-        """Convert logical driver angle (0-60) → servo angle (60-120)"""
-        # Linear mapping: 0→60, 35→90, 60→120
-        return 60 + (driver_angle * 1.0)   # 60/60 = 1.0 multiplier
-
-    def _set_steering(self, driver_angle: float):
-        """Safely set steering"""
-        self.current_driver_angle = driver_angle
-        servo_angle = self._driver_to_servo(driver_angle)
-        self.CarSteering.set_angle(servo_angle)
-        print(f"   → Steering set to {servo_angle:.1f}° (driver {driver_angle:.1f})")
+            driver_angle = 35 - (eye_angle - 125) * 7 / 15
+        return max(0, min(60, round(driver_angle, 2)))
 
     def _ramp_steering(self):
-        diff = self.target_driver_angle - self.current_driver_angle
+        diff = self.target_steering - self.current_steering
         if abs(diff) < 0.5:
             return
-        
+
         change = max(-self.MAX_STEER_CHANGE, min(self.MAX_STEER_CHANGE, diff))
-        new_angle = self.current_driver_angle + change
-        self._set_steering(new_angle)
+        self.current_steering += change
+
+        self._set_steering(self.current_steering)   # now sends correct physical angle
 
     def _apply_speed(self):
         if self.target_speed <= 5:
@@ -82,7 +82,7 @@ class Vehicle_Brain_Module:
                 self.current_speed = 0
         else:
             if abs(self.target_speed - self.current_speed) > 20:
-                self.CarEngine.ramp_to_speed(self.target_speed, MotorDirection.FORWARD, 0.8)
+                self.CarEngine.ramp_to_speed(self.target_speed, MotorDirection.FORWARD, self.SPEED_RAMP_TIME)
             else:
                 self.CarEngine.move_forward(self.target_speed)
             self.current_speed = self.target_speed
@@ -103,7 +103,7 @@ class Vehicle_Brain_Module:
     def drive(self):
         with self.lock:
             self.running = True
-            print("🚗 Autonomous Driving Started - Scanning + Steering Active")
+            print("🚗 Autonomous Driving Started - Scanning + Steering to best path")
 
         try:
             while self.running:
@@ -113,28 +113,32 @@ class Vehicle_Brain_Module:
                 distance_center = self.LiDAR.read_distance()
                 self.target_speed = self.smart_speed_from_distance(distance_center)
 
-                print(f"📡 Center: {distance_center:.1f}cm | Speed: {self.current_speed}% | Driver: {self.current_driver_angle:.1f}°")
+                print(f"📡 Center: {distance_center:.1f} cm | Target Speed: {self.target_speed}% | "
+                      f"Current Steering (logical): {self.current_steering:.1f}°")
 
-                # Emergency
+                # Critical emergency
                 if distance_center < 12:
+                    print("🚨 TOO CLOSE → Emergency Reverse")
                     self.CarEngine.emergency_stop()
                     self._emergency_reverse(1.3)
                     self.scan_counter = 0
                     continue
 
-                # === SCAN PERIODICALLY ===
+                # === PERIODIC SCAN + STEER ===
                 self.scan_counter += 1
-                if self.scan_counter >= self.SCAN_EVERY or distance_center < self.MINIMUM_GAP + 10:
-                    print("🔍 Scanning...")
+                if self.scan_counter >= self.SCAN_EVERY or distance_center < self.MINIMUM_GAP:
+                    print("🔍 Scanning best open direction...")
                     best_eye_angle, best_distance = self.CarEye.scan_row()
 
-                    if best_distance > 25:
-                        self.target_driver_angle = self.eye_to_steering(best_eye_angle)
-                        print(f"🎯 Targeting best direction → Driver {self.target_driver_angle}°")
+                    if best_distance > 30:                     # only trust good readings
+                        new_target = self.eye_to_steering(best_eye_angle)
+                        self.target_steering = new_target
+                        print(f"🎯 BEST DIRECTION FOUND → Eye {best_eye_angle}° | "
+                              f"Logical Driver {new_target}°")
 
                     self.scan_counter = 0
 
-                # Smooth steering & speed
+                # Normal smooth steering
                 self._ramp_steering()
                 self._apply_speed()
 
@@ -149,7 +153,7 @@ class Vehicle_Brain_Module:
         with self.lock:
             self.running = False
         self.CarEngine.emergency_stop()
-        self._set_steering(self.driver_center)
+        self._set_steering(self.driver_center_angle)      # center again
         self.CarEye.set_servo(self.eye_center_angle)
         print("🛑 Vehicle stopped safely")
 

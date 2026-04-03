@@ -1,93 +1,103 @@
+# Vehicle_Brain_Module.py
 import sys
+import os
 import time
+import types
 import numpy as np
-import signal
 
-# ---------------- PATHS ----------------
-sys.path.append('C:/Users/user_/OneDrive/Documents/Intelligent-Vehicle-Navigation')
+# -------------------- BYPASS MATPLOTLIB --------------------
+# SB3 imports matplotlib for logging; Pi environment fails
+os.environ["MPLBACKEND"] = "Agg"  # prevent GUI backend
+sys.modules['matplotlib'] = types.ModuleType('matplotlib')
+sys.modules['matplotlib.pyplot'] = types.ModuleType('pyplot')
+sys.modules['matplotlib.figure'] = types.ModuleType('figure')
 
-# ---------------- HARDWARE ----------------
-from Hardware.DC_Motor import DCMotor, MotorDirection
+# -------------------- IMPORTS --------------------
+sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
+
 from Hardware.PCA_Board import PCA9685
-from Hardware.Units.CarSteering import SteeringController
 from Hardware.Lidar_Sensor import TFLuna
+from Hardware.DC_Motor import DCMotor, MotorDirection
+from Hardware.Units.CarSteering import SteeringController
 from Hardware.Units.CarEye import MultiAngleLiDAR
 
-# ---------------- RL MODEL ----------------
-from stable_baselines3 import SAC  # Ensure SB3 is installed
+from stable_baselines3 import SAC  # Your model
 
-MODEL_PATH = 'C:/Users/user_/OneDrive/Documents/Intelligent-Vehicle-Navigation/checkpoints/sac_demo_120000_steps.zip'
+# -------------------- INIT HARDWARE --------------------
+motor = DCMotor(
+    rpwm_pin=4,
+    lpwm_pin=17,
+    ren_pin=27,
+    len_pin=22,
+    motor_name="MainDrive"
+)
 
-# ---------------- SAFETY LIMITS ----------------
-MAX_THROTTLE = 30  # in %
-MIN_LIDAR_DISTANCE = 15  # cm, minimum safe distance to obstacle
-STEERING_MIN = 60
-STEERING_MAX = 120
+pca = PCA9685()
+steering = SteeringController(pca, servo_channel=0, min_angle=60, max_angle=120)
+eye = MultiAngleLiDAR()
 
-# ---------------- INIT ----------------
-print("Initializing hardware...")
-motor = DCMotor()
-pca_board = PCA9685()
-steering = SteeringController(pca_board, servo_channel=0, min_angle=STEERING_MIN, max_angle=STEERING_MAX)
-lidar_front = TFLuna()
-car_eye = MultiAngleLiDAR()
-
-print("Loading SAC model...")
+# -------------------- LOAD MODEL --------------------
+MODEL_PATH = '/home/pi/Desktop/Intelligent-Vehicle-Navigation/checkpoints/sac_demo_120000_steps.zip'
 model = SAC.load(MODEL_PATH)
 
-# ---------------- SAFETY ----------------
-def emergency_stop(signum=None, frame=None):
-    print("\n🚨 EMERGENCY STOP!")
-    motor.emergency_stop()
-    steering.center()
-    sys.exit(0)
+# -------------------- HELPER FUNCTIONS --------------------
+def normalize_scan(scan):
+    """Convert distances to normalized 0-1"""
+    return [min(d / 800.0, 1.0) for d in scan]  # assuming max lidar 800 cm
 
-signal.signal(signal.SIGINT, emergency_stop)
-signal.signal(signal.SIGTERM, emergency_stop)
+def safety_check(front_distance_cm):
+    """Stop if obstacle too close"""
+    if front_distance_cm < 15:  # 15 cm safe distance
+        motor.stop()
+        steering.center()
+        return False
+    return True
 
-# ---------------- OBSERVATION ----------------
 def get_observation():
-    """
-    Observation is an array:
-    - Front LiDAR distance (cm)
-    - Multi-angle LiDAR distances (list)
-    - Steering angle
-    """
-    front_dist = lidar_front.read_distance()
-    front_dist = max(front_dist, MIN_LIDAR_DISTANCE)
-    
-    eye_scan = car_eye.scan_row()  # 9-angle scan
-    obs = np.array([front_dist] + eye_scan + [steering.get_current_angle()], dtype=np.float32)
+    """Returns model input"""
+    scan = eye.scan_row()[:8]          # Take first 8 angles
+    scan_norm = normalize_scan(scan)
+    steer_norm = (steering.get_current_angle() - 60) / 60  # normalize to 0-1
+    obs = np.array(scan_norm + [steer_norm], dtype=np.float32)
     return obs
 
-# ---------------- ACTIONS ----------------
-def apply_action(action):
-    """
-    action: np.array([steer_norm, throttle_norm])
-    - steer_norm: -1 to 1
-    - throttle_norm: -1 to 1
-    """
-    steer_val = STEERING_MIN + ((action[0] + 1)/2) * (STEERING_MAX - STEERING_MIN)
-    steering.set_angle(int(steer_val))
-    
-    throttle = np.clip(action[1], -1, 1)
-    throttle_pct = abs(throttle) * MAX_THROTTLE
-    
-    if throttle >= 0:
-        motor.move_forward(throttle_pct)
-    else:
-        motor.move_reverse(throttle_pct)
-
-# ---------------- MAIN LOOP ----------------
-print("Starting SAC controller...")
+# -------------------- MAIN LOOP --------------------
 try:
+    print("🚗 Vehicle AI starting...")
     while True:
         obs = get_observation()
-        action, _ = model.predict(obs, deterministic=True)
-        apply_action(action)
-        time.sleep(0.05)  # 20 Hz loop
+        front_distance = eye.scan_row()[0]  # front-most LiDAR
+
+        if not safety_check(front_distance):
+            time.sleep(0.1)
+            continue
+
+        action, _states = model.predict(obs, deterministic=True)
+        throttle, steer_delta = action
+
+        # -------------------- APPLY ACTIONS --------------------
+        # Steering
+        current_angle = steering.get_current_angle()
+        new_angle = current_angle + int(steer_delta * 10)  # scale small steps
+        steering.set_angle(new_angle)
+
+        # Motor
+        if throttle > 0:
+            motor.move_forward(min(max(throttle * 100, 10), 100))  # scale 0-1 → 10-100%
+        else:
+            motor.move_reverse(min(max(-throttle * 100, 10), 100))
+
+        time.sleep(0.05)  # 20Hz control loop
+
 except KeyboardInterrupt:
-    emergency_stop()
+    print("\n🛑 Stopping vehicle...")
+    motor.emergency_stop()
+    steering.center()
+    pca.reset()
+    print("Shutdown complete.")
+
 except Exception as e:
-    print(f"\n❌ Error: {e}")
-    emergency_stop()
+    print(f"\n❌ ERROR: {e}")
+    motor.emergency_stop()
+    steering.center()
+    pca.reset()

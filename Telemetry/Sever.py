@@ -1,68 +1,49 @@
 import socket
 import threading
 import json
-import logging
-from logging.handlers import RotatingFileHandler
+from logger import IndustrialLogger
 
-HOST = "0.0.0.0"
-PORT = 5000
+SERVER_PORT = 9999
 
-# -------- LOGGER --------
-logger = logging.getLogger("ServerLogger")
-logger.setLevel(logging.INFO)
+# ---------------- SERVER LOGGER ----------------
+server_logger = IndustrialLogger("Server_Log.json")
 
-handler = RotatingFileHandler("Server_Log.json", maxBytes=2_000_000, backupCount=5)
-handler.setFormatter(logging.Formatter('%(message)s'))
-logger.addHandler(handler)
-
-# -------- SERVER --------
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind((HOST, PORT))
-server.listen(1)
-
-print("🟢 Waiting for Pi...")
-conn, addr = server.accept()
-print(f"✅ Connected: {addr}")
-
-last_id = 0  # 🔥 SYNC CONTROL
-
-def receive_logs():
-    global last_id
+# ---------------- CLIENT HANDLER ----------------
+def handle_client(conn, addr):
+    print(f"[Server] Connected by {addr}")
     buffer = ""
-
     while True:
         try:
-            data = conn.recv(1024).decode()
+            data = conn.recv(1024)
             if not data:
                 break
 
-            buffer += data
-
+            buffer += data.decode()
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
-
-                if line.strip():
-                    log = json.loads(line)
-
-                    # 🔥 SYNC: ignore duplicates
-                    if log["id"] <= last_id:
-                        continue
-
-                    last_id = log["id"]
-
-                    logger.info(json.dumps(log))
-                    print(f"[{log['level']}] {log['message']}")
-
+                try:
+                    log_entry = json.loads(line)
+                    server_logger.info("Client log", **log_entry)
+                except json.JSONDecodeError:
+                    print(f"[Server] Invalid JSON from client: {line}")
         except Exception as e:
-            print("❌ Error:", e)
+            print(f"[Server] Error: {e}")
             break
 
-threading.Thread(target=receive_logs, daemon=True).start()
+    conn.close()
+    print(f"[Server] Connection closed {addr}")
 
-# -------- COMMAND LOOP --------
-while True:
-    cmd = input("Command (START/STOP): ").strip().upper()
+# ---------------- MAIN SERVER ----------------
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("", SERVER_PORT))
+    sock.listen()
+    print(f"[Server] Listening on port {SERVER_PORT}")
 
-    if cmd in ["START", "STOP"]:
-        conn.sendall(cmd.encode())
-        print("📤 Sent:", cmd)
+    while True:
+        conn, addr = sock.accept()
+        threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+
+
+if __name__ == "__main__":
+    main()

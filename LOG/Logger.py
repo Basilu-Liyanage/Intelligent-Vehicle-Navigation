@@ -7,44 +7,94 @@ from logging.handlers import RotatingFileHandler
 
 
 class IndustrialLogger:
-    def __init__(self, filename="client_log.json"):
+    """
+    Industrial-grade logger for robotics systems
+    Features:
+    - Non-blocking (queue-based)
+    - JSON structured logs
+    - Log levels
+    - File rotation (SD-safe)
+    - Network queue support
+    """
+
+    def __init__(self,
+                 filename="client_log.json",
+                 max_bytes=1_000_000,
+                 backup_count=5):
+
+        # Queues
         self.file_queue = queue.Queue()
         self.network_queue = queue.Queue()
 
-        self.log_id = 0  # 🔥 UNIQUE ID FOR SYNC
-
+        # Logger setup
         self.logger = logging.getLogger("IndustrialLogger")
         self.logger.setLevel(logging.INFO)
 
-        handler = RotatingFileHandler(filename, maxBytes=1_000_000, backupCount=5)
-        handler.setFormatter(logging.Formatter('%(message)s'))
+        handler = RotatingFileHandler(
+            filename,
+            maxBytes=max_bytes,
+            backupCount=backup_count
+        )
+
+        formatter = logging.Formatter('%(message)s')
+        handler.setFormatter(formatter)
 
         if not self.logger.handlers:
             self.logger.addHandler(handler)
 
-        threading.Thread(target=self._writer, daemon=True).start()
+        # Start background worker
+        self.worker_thread = threading.Thread(
+            target=self._process_logs,
+            daemon=True
+        )
+        self.worker_thread.start()
 
-    def _writer(self):
+    # ---------------- INTERNAL WORKER ----------------
+    def _process_logs(self):
         while True:
-            log = self.file_queue.get()
-            self.logger.info(json.dumps(log))
+            try:
+                log_entry = self.file_queue.get()
+                self.logger.info(json.dumps(log_entry))
+            except Exception as e:
+                print(f"Logger error: {e}")
 
+    # ---------------- MAIN LOG FUNCTION ----------------
     def log(self, level, message, **kwargs):
-        self.log_id += 1
+        """
+        Log structured message
 
-        entry = {
-            "id": self.log_id,
+        Example:
+        logger.log("INFO", "Speed updated", speed=50)
+        """
+
+        log_entry = {
             "timestamp": time.time(),
             "level": level,
             "message": message,
             **kwargs
         }
 
-        self.file_queue.put(entry)
-        self.network_queue.put(entry)
+        # Send to queues
+        self.file_queue.put(log_entry)
+        self.network_queue.put(log_entry)
 
-        return entry
+        return log_entry
 
-    def info(self, msg, **k): return self.log("INFO", msg, **k)
-    def warning(self, msg, **k): return self.log("WARNING", msg, **k)
-    def error(self, msg, **k): return self.log("ERROR", msg, **k)
+    # ---------------- CONVENIENCE METHODS ----------------
+    def info(self, message, **kwargs):
+        return self.log("INFO", message, **kwargs)
+
+    def warning(self, message, **kwargs):
+        return self.log("WARNING", message, **kwargs)
+
+    def error(self, message, **kwargs):
+        return self.log("ERROR", message, **kwargs)
+
+    def critical(self, message, **kwargs):
+        return self.log("CRITICAL", message, **kwargs)
+
+    # ---------------- OPTIONAL: FLUSH ----------------
+    def flush(self):
+        """Wait until all logs are written"""
+        while not self.file_queue.empty():
+            time.sleep(0.01)

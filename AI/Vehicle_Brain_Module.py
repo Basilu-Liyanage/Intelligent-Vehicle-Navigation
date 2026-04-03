@@ -21,7 +21,7 @@ class Vehicle_Brain_Module:
         self.LiDAR = TFLuna()
 
         # === CONFIG ===
-        self.MINIMUM_GAP = 25      # Increased a bit for safety
+        self.MINIMUM_GAP = 25
         self.MID_GAP = 50
         self.HIGH_GAP = 100
 
@@ -30,6 +30,7 @@ class Vehicle_Brain_Module:
 
         self.MAX_STEER_CHANGE = 7
         self.SPEED_RAMP_TIME = 0.8
+        self.SCAN_EVERY = 9          # scan every ~9 loops (~0.7–0.8 sec)
 
         self.running = False
         self.lock = threading.Lock()
@@ -38,6 +39,8 @@ class Vehicle_Brain_Module:
         self.target_speed = 0
         self.current_steering = self.driver_center_angle
         self.target_steering = self.driver_center_angle
+
+        self.scan_counter = 0
 
         # Safe start
         self.CarSteering.set_angle(self.current_steering)
@@ -87,75 +90,48 @@ class Vehicle_Brain_Module:
     def drive(self):
         with self.lock:
             self.running = True
-            print("🚗 Autonomous Driving Started - Press Ctrl+C to stop")
+            print("🚗 Autonomous Driving Started - Always steering to best path")
 
         try:
             while self.running:
-                # === CENTER LOOK ===
                 self.CarEye.set_servo(self.eye_center_angle)
-                time.sleep(0.08)
+                time.sleep(0.07)
 
                 distance_center = self.LiDAR.read_distance()
-                
-                print(f"📡 Center Distance: {distance_center:.1f} cm | Speed: {self.current_speed}% | Steering: {self.current_steering}°")
-
                 self.target_speed = self.smart_speed_from_distance(distance_center)
 
-                # === CRITICAL EMERGENCY ===
+                print(f"📡 Center: {distance_center:.1f} cm | Target Speed: {self.target_speed}% | Steering: {self.current_steering:.1f}°")
+
+                # Critical emergency
                 if distance_center < 12:
-                    print("🚨 TOO CLOSE! Emergency Reverse")
+                    print("🚨 TOO CLOSE → Emergency Reverse")
                     self.CarEngine.emergency_stop()
                     self._emergency_reverse(1.3)
+                    self.scan_counter = 0
                     continue
 
-                # === PATH BLOCKED → SCAN ===
-                if distance_center < self.MINIMUM_GAP:
-                    print(f"🛑 PATH BLOCKED ({distance_center:.1f}cm) → Starting Scan...")
-                    self.CarEngine.stop()
-                    self.current_speed = 0
-                    self.target_speed = 0
-
-                    # Call your original scan_row (no extra parameters)
+                # === ALWAYS SCAN PERIODICALLY ===
+                self.scan_counter += 1
+                if self.scan_counter >= self.SCAN_EVERY or distance_center < self.MINIMUM_GAP:
+                    print("🔍 Scanning best open direction...")
                     best_eye_angle, best_distance = self.CarEye.scan_row()
 
-                    print(f"📊 Scan Result → Best Eye: {best_eye_angle}° | Distance: {best_distance:.1f} cm")
-
-                    if best_distance < self.MINIMUM_GAP * 1.5:
-                        print("❌ No safe path found → Reversing")
-                        self._emergency_reverse(1.8)
-                        self.target_steering = self.driver_center_angle
-                    else:
+                    if best_distance > 30:   # only trust good readings
                         self.target_steering = self.eye_to_steering(best_eye_angle)
-                        print(f"🎯 TURNING TO BEST DIRECTION → Driver Angle: {self.target_steering}°")
+                        print(f"🎯 New best direction → Driver Angle: {self.target_steering}°")
 
-                        self._smooth_turn_to_target()
-                        self.target_speed = 45   # Start moving slowly after turn
+                    self.scan_counter = 0
 
-                    # Reset eye to center
-                    self.CarEye.set_servo(self.eye_center_angle)
-
-                # === NORMAL DRIVING ===
+                # Normal smooth control
                 self._ramp_steering()
                 self._apply_speed()
 
-                time.sleep(0.07)   # Control loop speed
+                time.sleep(0.06)
 
         except Exception as e:
-            print(f"💥 Error in drive loop: {e}")
+            print(f"💥 Error: {e}")
         finally:
             self.stop()
-
-    def _smooth_turn_to_target(self):
-        """Smooth steering to new direction"""
-        print("🔄 Smoothing steering...")
-        for _ in range(40):
-            if abs(self.current_steering - self.target_steering) < 1.0:
-                break
-            self._ramp_steering()
-            time.sleep(0.03)
-        self.current_steering = self.target_steering
-        self.CarSteering.set_angle(self.current_steering)
-        print("✅ Steering completed")
 
     def stop(self):
         with self.lock:

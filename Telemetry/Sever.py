@@ -2,6 +2,7 @@ import socket
 import threading
 import json
 import os
+import time
 from datetime import datetime
 
 HOST = "0.0.0.0"
@@ -11,7 +12,9 @@ SERVER_LOG_FILE = "server_log.txt"
 class VehicleServer:
     def __init__(self):
         self.connections = []
+        self.clients = {}  # Store client info
         self.log_lock = threading.Lock()
+        self.running = True
         self.setup_server_log()
         
     def setup_server_log(self):
@@ -34,7 +37,7 @@ class VehicleServer:
                 print(f"❌ Error writing to server log: {e}")
                 return False
     
-    def handle_client_log(self, log_data, conn):
+    def handle_client_log(self, log_data, conn, addr):
         """Process client log and update server log"""
         try:
             content = log_data.get('content', '')
@@ -51,59 +54,68 @@ class VehicleServer:
                     'log_id': datetime.now().isoformat(),
                     'message': 'Log received and saved'
                 }
-                conn.sendall(json.dumps(response).encode())
-                print(f"📥 Received and logged client data: {content[:50]}...")
+                try:
+                    conn.sendall(json.dumps(response).encode())
+                    print(f"📥 Received and logged client data: {content[:50]}...")
+                except:
+                    print(f"❌ Failed to send ACK to client")
             else:
                 print(f"❌ Failed to log client data")
                 
         except Exception as e:
             print(f"❌ Error processing client log: {e}")
     
-    def send_command_to_client(self, conn, command):
+    def send_command_to_client(self, conn, command, addr):
         """Send command to client"""
         try:
             conn.sendall(command.encode())
-            self.update_server_log(f"Sent command: {command}", "COMMAND")
-            print(f"📤 Sent: {command}")
+            self.update_server_log(f"Sent command: {command} to {addr}", "COMMAND")
+            print(f"📤 Sent {command} to {addr}")
             return True
         except Exception as e:
-            print(f"❌ Error sending command: {e}")
+            print(f"❌ Error sending command to {addr}: {e}")
             return False
-    
-    def send_log_to_client(self, conn, log_entry):
-        """Send server log entry to client"""
-        try:
-            log_data = {
-                'type': 'server_log_response',
-                'timestamp': datetime.now().isoformat(),
-                'message': log_entry
-            }
-            conn.sendall(json.dumps(log_data).encode())
-        except Exception as e:
-            print(f"❌ Error sending server log to client: {e}")
     
     def handle_client(self, conn, addr):
         """Handle individual client connection"""
-        print(f"✅ Connected to {addr}")
+        print(f"✅ Client connected from {addr}")
         self.update_server_log(f"Client connected from {addr}", "CONNECTION")
+        
+        # Add to clients dict
+        self.clients[addr] = {
+            'connection': conn,
+            'connected_time': datetime.now(),
+            'last_activity': datetime.now()
+        }
         
         try:
             # Receive initial client info
-            initial_data = conn.recv(1024).decode().strip()
-            if initial_data:
-                try:
-                    client_info = json.loads(initial_data)
-                    self.update_server_log(f"Client info: {client_info}", "INFO")
-                except:
-                    pass
+            conn.settimeout(1)  # Set timeout for recv
+            try:
+                initial_data = conn.recv(1024).decode().strip()
+                if initial_data:
+                    try:
+                        client_info = json.loads(initial_data)
+                        self.clients[addr]['info'] = client_info
+                        self.update_server_log(f"Client info from {addr}: {client_info}", "INFO")
+                        print(f"📋 Client {addr} identified as: {client_info.get('client_id', 'unknown')}")
+                    except:
+                        pass
+            except socket.timeout:
+                pass
             
             # Main communication loop
-            while True:
+            while self.running and addr in self.clients:
                 try:
+                    conn.settimeout(5)
                     data = conn.recv(4096).decode().strip()
                     
                     if not data:
+                        print(f"📭 Client {addr} disconnected (no data)")
                         break
+                    
+                    # Update last activity
+                    self.clients[addr]['last_activity'] = datetime.now()
                     
                     # Try to parse as JSON
                     try:
@@ -111,50 +123,102 @@ class VehicleServer:
                         
                         if json_data.get('type') == 'client_log':
                             # Handle client log data
-                            self.handle_client_log(json_data, conn)
+                            self.handle_client_log(json_data, conn, addr)
                         else:
-                            print(f"📩 Received unknown JSON: {json_data}")
+                            print(f"📩 Received unknown JSON from {addr}: {json_data}")
                             
                     except json.JSONDecodeError:
-                        # Handle non-JSON data (for backward compatibility)
-                        print(f"📩 Received non-JSON data: {data}")
+                        # Handle non-JSON data
+                        print(f"📩 Received non-JSON data from {addr}: {data}")
                         
+                except socket.timeout:
+                    # Timeout is normal, just continue
+                    continue
                 except Exception as e:
-                    print(f"❌ Error receiving data: {e}")
+                    print(f"❌ Error receiving data from {addr}: {e}")
                     break
                     
         except Exception as e:
-            print(f"❌ Client handler error: {e}")
+            print(f"❌ Client handler error for {addr}: {e}")
         finally:
-            self.update_server_log(f"Client disconnected from {addr}", "DISCONNECTION")
-            conn.close()
+            self.disconnect_client(addr)
+    
+    def disconnect_client(self, addr):
+        """Clean up client connection"""
+        if addr in self.clients:
             print(f"🔌 Disconnected from {addr}")
+            self.update_server_log(f"Client disconnected from {addr}", "DISCONNECTION")
+            try:
+                self.clients[addr]['connection'].close()
+            except:
+                pass
+            del self.clients[addr]
     
     def command_input_handler(self):
         """Handle server console input for sending commands"""
-        while True:
-            cmd = input("\nEnter command (START/STOP): ").strip().upper()
-            
-            if cmd in ["START", "STOP"]:
-                # Send command to all connected clients
-                for conn in self.connections[:]:  # Iterate over copy
-                    if self.send_command_to_client(conn, cmd):
-                        # Log the command in server log
-                        self.update_server_log(f"Command executed: {cmd}", "COMMAND")
-                    else:
-                        # Remove dead connection
-                        if conn in self.connections:
-                            self.connections.remove(conn)
-            elif cmd == "VIEW_LOG":
-                # Display recent server log entries
-                self.display_recent_logs()
-            elif cmd == "CLEAR_LOG":
-                # Clear server log (with confirmation)
-                confirm = input("Are you sure you want to clear the server log? (yes/no): ").strip().lower()
-                if confirm == 'yes':
-                    self.clear_server_log()
-            else:
-                print("❌ Invalid command. Use START, STOP, VIEW_LOG, or CLEAR_LOG")
+        print("\n" + "="*60)
+        print("🖥️  Server Console Ready")
+        print("Available commands:")
+        print("  START        - Send START command to all connected clients")
+        print("  STOP         - Send STOP command to all connected clients")
+        print("  STATUS       - Show connected clients")
+        print("  VIEW_LOG     - Display recent server log entries")
+        print("  CLEAR_LOG    - Clear the server log file")
+        print("  EXIT         - Shutdown server")
+        print("="*60 + "\n")
+        
+        while self.running:
+            try:
+                cmd = input("> ").strip().upper()
+                
+                if cmd in ["START", "STOP"]:
+                    if not self.clients:
+                        print("⚠️  No clients connected")
+                        continue
+                    
+                    # Send command to all connected clients
+                    success_count = 0
+                    for addr, client_info in list(self.clients.items()):
+                        if self.send_command_to_client(client_info['connection'], cmd, addr):
+                            success_count += 1
+                        else:
+                            # Remove dead connection
+                            self.disconnect_client(addr)
+                    
+                    print(f"📤 Command '{cmd}' sent to {success_count}/{len(self.clients)} clients")
+                    self.update_server_log(f"Command '{cmd}' sent to {success_count} clients", "COMMAND")
+                    
+                elif cmd == "STATUS":
+                    print(f"\n📊 Connected clients: {len(self.clients)}")
+                    for addr, info in self.clients.items():
+                        connected_time = datetime.now() - info['connected_time']
+                        print(f"  • {addr} - Connected for {connected_time.seconds}s")
+                        if 'info' in info:
+                            print(f"    ID: {info['info'].get('client_id', 'unknown')}")
+                    print()
+                    
+                elif cmd == "VIEW_LOG":
+                    self.display_recent_logs()
+                    
+                elif cmd == "CLEAR_LOG":
+                    confirm = input("Are you sure you want to clear the server log? (yes/no): ").strip().lower()
+                    if confirm == 'yes':
+                        self.clear_server_log()
+                        
+                elif cmd == "EXIT":
+                    print("🛑 Shutting down server...")
+                    self.running = False
+                    break
+                    
+                else:
+                    print("❌ Invalid command. Use START, STOP, STATUS, VIEW_LOG, CLEAR_LOG, or EXIT")
+                    
+            except KeyboardInterrupt:
+                print("\n🛑 Server shutdown requested")
+                self.running = False
+                break
+            except Exception as e:
+                print(f"❌ Command handler error: {e}")
     
     def display_recent_logs(self, lines=20):
         """Display recent server log entries"""
@@ -189,13 +253,9 @@ class VehicleServer:
         server.bind((HOST, PORT))
         server.listen(5)
         
-        print(f"🟢 Server started on {HOST}:{PORT}")
-        print("Waiting for Pi connections...")
-        print("\nAvailable commands:")
-        print("  START  - Send START command to connected clients")
-        print("  STOP   - Send STOP command to connected clients")
-        print("  VIEW_LOG - Display recent server log entries")
-        print("  CLEAR_LOG - Clear the server log file")
+        print(f"\n🟢 Server started on {HOST}:{PORT}")
+        print(f"📝 Log file: {SERVER_LOG_FILE}")
+        print("Waiting for Pi connections...\n")
         
         self.update_server_log(f"Server started on {HOST}:{PORT}", "SYSTEM")
         
@@ -205,19 +265,30 @@ class VehicleServer:
         command_thread.start()
         
         # Main connection acceptance loop
-        while True:
+        while self.running:
             try:
+                server.settimeout(1)
                 conn, addr = server.accept()
-                self.connections.append(conn)
                 
                 # Start client handler thread
                 client_thread = threading.Thread(target=self.handle_client, args=(conn, addr))
                 client_thread.daemon = True
                 client_thread.start()
                 
+            except socket.timeout:
+                continue
             except Exception as e:
-                print(f"❌ Server error: {e}")
-                self.update_server_log(f"Server error: {e}", "ERROR")
+                if self.running:
+                    print(f"❌ Server error: {e}")
+                    self.update_server_log(f"Server error: {e}", "ERROR")
+                time.sleep(1)
+        
+        # Cleanup
+        print("Cleaning up connections...")
+        for addr in list(self.clients.keys()):
+            self.disconnect_client(addr)
+        server.close()
+        print("Server shutdown complete")
 
 if __name__ == "__main__":
     server = VehicleServer()

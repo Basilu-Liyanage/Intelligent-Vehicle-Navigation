@@ -24,6 +24,8 @@ class VehicleClient:
         self.log_streaming = False
         self.last_file_position = 0
         self.log_monitor_thread = None
+        self.socket = None
+        self.connected = False
 
     def start_drive(self):
         if not self.running:
@@ -60,19 +62,21 @@ class VehicleClient:
     def stop_log_streaming(self):
         """Stop log streaming"""
         self.log_streaming = False
-        if self.log_monitor_thread:
-            self.log_monitor_thread.join(timeout=2)
         print("📁 Stopped client log streaming")
 
-    def monitor_and_stream_logs(self, socket_connection):
+    def monitor_and_stream_logs(self):
         """Monitor client log file and send new entries to server"""
         # Create log file if it doesn't exist
         if not os.path.exists(CLIENT_LOG_FILE):
             with open(CLIENT_LOG_FILE, 'w') as f:
                 f.write(f"[{datetime.now()}] Client log file created\n")
 
-        while self.log_streaming and self.running:
+        while self.log_streaming and self.running and self.connected:
             try:
+                if not self.socket:
+                    time.sleep(1)
+                    continue
+                    
                 with open(CLIENT_LOG_FILE, 'r') as f:
                     # Seek to last read position
                     f.seek(self.last_file_position)
@@ -92,8 +96,12 @@ class VehicleClient:
                                     'content': line.strip()
                                 }
                                 message = json.dumps(log_data)
-                                socket_connection.sendall(message.encode())
-                                print(f"📤 Sent log: {line.strip()[:50]}...")
+                                try:
+                                    self.socket.sendall(message.encode())
+                                    print(f"📤 Sent log: {line.strip()[:50]}...")
+                                except:
+                                    print("❌ Failed to send log, connection lost")
+                                    return
                     
                     time.sleep(1)  # Check for new logs every second
                     
@@ -101,13 +109,15 @@ class VehicleClient:
                 print(f"❌ Error monitoring client log: {e}")
                 time.sleep(2)
 
-    def receive_commands(self, socket_connection):
-        """Receive and process commands from server"""
-        while self.running:
+    def handle_server_communication(self):
+        """Handle all server communication in one thread"""
+        while self.connected:
             try:
-                data = socket_connection.recv(1024).decode().strip()
+                # Receive commands from server
+                data = self.socket.recv(1024).decode().strip()
                 
                 if not data:
+                    print("📭 Server disconnected")
                     break
                 
                 # Check if it's a command or log response
@@ -116,7 +126,7 @@ class VehicleClient:
                     if json_data.get('type') == 'server_log_response':
                         print(f"📝 Server log updated: {json_data.get('message', '')}")
                     elif json_data.get('type') == 'log_ack':
-                        print(f"✅ Server acknowledged log: {json_data.get('log_id', '')}")
+                        print(f"✅ Server acknowledged log: {json_data.get('log_id', '')[:20]}...")
                 except json.JSONDecodeError:
                     # Handle plain text commands
                     if data == "START":
@@ -126,16 +136,22 @@ class VehicleClient:
                     else:
                         print(f"📩 Unknown command: {data}")
                         
+            except socket.timeout:
+                continue
             except Exception as e:
-                print(f"❌ Command receive error: {e}")
+                print(f"❌ Communication error: {e}")
                 break
+        
+        self.connected = False
 
     def connect(self):
         while True:
             try:
                 print("🔌 Connecting to server...")
-                client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                client.connect((SERVER_IP, PORT))
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.settimeout(5)  # Add timeout for recv
+                self.socket.connect((SERVER_IP, PORT))
+                self.connected = True
                 print("✅ Connected to server")
 
                 # Send client identification
@@ -144,23 +160,27 @@ class VehicleClient:
                     'client_id': 'vehicle_pi',
                     'timestamp': datetime.now().isoformat()
                 }
-                client.sendall(json.dumps(client_info).encode())
+                self.socket.sendall(json.dumps(client_info).encode())
 
-                # Start command receiving thread
-                command_thread = threading.Thread(target=self.receive_commands, args=(client,))
-                command_thread.daemon = True
-                command_thread.start()
-
-                # Main communication loop
-                while self.running:
-                    # If log streaming is active, monitor and send logs
-                    if self.log_streaming:
-                        self.monitor_and_stream_logs(client)
-                    
-                    time.sleep(0.1)
+                # Start communication handler
+                comm_thread = threading.Thread(target=self.handle_server_communication)
+                comm_thread.daemon = True
+                comm_thread.start()
+                
+                # Keep the main connection alive
+                comm_thread.join()
+                
+                print("🔌 Disconnected from server")
 
             except Exception as e:
                 print(f"❌ Connection error: {e}")
+                self.connected = False
+                if self.socket:
+                    try:
+                        self.socket.close()
+                    except:
+                        pass
+                    self.socket = None
                 print("🔄 Reconnecting in 3s...")
                 time.sleep(3)
 

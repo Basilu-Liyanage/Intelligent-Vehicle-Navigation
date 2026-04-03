@@ -11,32 +11,38 @@ class MultiAngleLiDAR:
         self.pca = PCA9685()
         self.eye_servo_channel = 1  
 
-        self.angles = [230, 200, 175, 150, 125, 105, 80, 55, 30]
+        # Safe angles only
+        self.angles = [200, 175, 150, 125, 105, 80, 55]
 
     def set_servo(self, angle):
-        self.pca.channel_map[self.eye_servo_channel].rotate(angle)
+        safe_angle = max(50, min(200, int(angle)))
+        self.pca.channel_map[self.eye_servo_channel].rotate(safe_angle)
 
     def scan_row(self):
-        """Scan and return the BEST OPEN DIRECTION (farthest distance)"""
-        best_angle = None
-        best_distance = -float('inf')   # Now we want MAX distance
-        distances = []
+        """Scan and prefer the BEST + STRAIGHTEST open path"""
+        best_angle = 125
+        best_score = -float('inf')
 
-        print("🔍 Scanning for best open path...")
+        print("🔍 Scanning for best open direction...")
 
         for angle in self.angles:
             self.set_servo(angle)
-            time.sleep(0.10)                    # settle time
+            time.sleep(0.10)
 
             distance = self.lidar.read_distance()
-            distances.append((angle, distance))
 
-            if distance > best_distance:
-                best_distance = distance
+            # Score = distance + strong preference for center
+            center_bias = 300 - abs(angle - 125) * 4      # Big bonus for straighter angles
+            score = distance + center_bias
+
+            print(f"   Eye {angle:3}° → Dist {distance:4.1f}cm | Score {score:6.1f}")
+
+            if score > best_score:
+                best_score = score
                 best_angle = angle
 
-        print(f"✅ Best open path: {best_angle}° | Distance: {best_distance:.1f} cm")
-        self.set_servo(125)                     # always return to center
-        time.sleep(0.2)
+        self.set_servo(125)          # Return to center
+        time.sleep(0.25)
 
-        return best_angle, best_distance
+        print(f"✅ Chosen: {best_angle}° (Best open + straight path)")
+        return best_angle, best_score

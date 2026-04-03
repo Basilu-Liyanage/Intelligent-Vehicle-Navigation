@@ -16,7 +16,7 @@ class Vehicle_Brain_Module:
     def __init__(self):
         self.PCABoard = PCA9685()
         self.CarEngine = DCMotor(rpwm_pin=4, lpwm_pin=17, ren_pin=27, len_pin=22, motor_name="MainDrive")
-        self.CarSteering = SteeringController(self.PCABoard, servo_channel=0, min_angle=60, max_angle=120)
+        self.CarSteering = SteeringController(self.PCABoard, servo_channel=0, min_angle=0, max_angle=60)
         self.CarEye = MultiAngleLiDAR()
         self.LiDAR = TFLuna()
 
@@ -33,7 +33,7 @@ class Vehicle_Brain_Module:
         # Angles
         self.eye_center_angle = 125
         self.driver_center_angle = 35
-        self.STEERING_CENTER_SERVO = 60 + self.driver_center_angle
+        self.STEERING_CENTER_SERVO = self.driver_center_angle
 
         # Speed tracking
         self.current_speed = 0
@@ -53,8 +53,7 @@ class Vehicle_Brain_Module:
 
     def set_wheels_turned(self, driver_angle):
         """Turn wheels to specific angle"""
-        servo_angle = 60 + driver_angle
-        self.CarSteering.set_angle(servo_angle)
+        self.CarSteering.set_angle(driver_angle)
         time.sleep(0.15)
 
     def smart_speed_control(self):

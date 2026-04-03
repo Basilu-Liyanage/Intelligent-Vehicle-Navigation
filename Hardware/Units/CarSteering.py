@@ -1,5 +1,5 @@
 class SteeringController:
-    def __init__(self, pca, servo_channel=0, min_angle=60, max_angle=120):
+    def __init__(self, pca, servo_channel=0, min_angle=0, max_angle=60):
         """
         pca: PCA9685 instance
         servo_channel: which channel your steering servo is on

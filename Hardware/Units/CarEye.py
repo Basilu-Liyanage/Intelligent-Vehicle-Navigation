@@ -25,10 +25,3 @@ class MultiAngleLiDAR:
             row.append(distance)
         return row
 
-# Example usage:
-lidar_map = MultiAngleLiDAR()
-
-while True:
-    latest = lidar_map.update_map()
-    print("Latest scan:", latest)
-    time.sleep(0.1) 

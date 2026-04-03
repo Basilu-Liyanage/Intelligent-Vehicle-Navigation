@@ -19,9 +19,9 @@ class MultiAngleLiDAR:
         self.pca.channel_map[self.eye_servo_channel].rotate(safe_angle)
 
     def scan_row(self):
-        """Scan and prefer the BEST + STRAIGHTEST open path"""
-        best_angle = 125
-        best_score = -float('inf')
+        """Scan and return the angle with the maximum distance (no center bias)"""
+        best_angle = None
+        best_distance = -float('inf')
 
         print("🔍 Scanning for best open direction...")
 
@@ -31,18 +31,14 @@ class MultiAngleLiDAR:
 
             distance = self.lidar.read_distance()
 
-            # Score = distance + strong preference for center
-            center_bias = 300 - abs(angle - 125) * 4      # Big bonus for straighter angles
-            score = distance + center_bias
+            print(f"   Eye {angle:3}° → Dist {distance:4.1f}cm")
 
-            print(f"   Eye {angle:3}° → Dist {distance:4.1f}cm | Score {score:6.1f}")
-
-            if score > best_score:
-                best_score = score
+            if distance > best_distance:
+                best_distance = distance
                 best_angle = angle
 
-        self.set_servo(125)          # Return to center
+        self.set_servo(125)  # Return to center
         time.sleep(0.25)
 
-        print(f"✅ Chosen: {best_angle}° (Best open + straight path)")
-        return best_angle, best_score
+        print(f"✅ Chosen: {best_angle}° (Widest open path)")
+        return best_angle, best_distance

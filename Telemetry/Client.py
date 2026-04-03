@@ -1,78 +1,85 @@
 import socket
 import threading
 import json
+import time
+import sys
+sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
+from AI.Vehicle_Brain_Module import Vehicle_Brain_Module
 from LOG.Logger import IndustrialLogger
 
+SERVER_IP = "SERVER_IP_HERE"  # replace with your server IP
 SERVER_PORT = 9999
-server_logger = IndustrialLogger("Server_Log.json")
 
-# Connected clients
-clients = []
+client_logger = IndustrialLogger("Client_Log.json")
+vehicle = Vehicle_Brain_Module(log_callback=client_logger.info)
 
-def handle_client(conn, addr):
-    print(f"[Server] Connected by {addr}")
-    clients.append(conn)
-    buffer = ""
+connected = False
+sock = None
 
-    try:
+def connect_to_server():
+    global sock, connected
+    while True:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((SERVER_IP, SERVER_PORT))
+            connected = True
+            print("[Client] CONNECTED to server")
+            break
+        except Exception as e:
+            print(f"[Client] Connection failed, retrying in 3s... ({e})")
+            time.sleep(3)
+
+def network_thread():
+    global connected
+    connect_to_server()
+
+    # Log sender
+    def send_logs():
         while True:
-            data = conn.recv(1024)
-            if not data:
-                break
+            if not connected:
+                time.sleep(0.5)
+                continue
+            try:
+                log_entry = client_logger.network_queue.get()
+                sock.sendall((json.dumps(log_entry) + "\n").encode())
+            except:
+                connected = False
+                print("[Client] LOST connection, reconnecting...")
+                connect_to_server()
 
+    threading.Thread(target=send_logs, daemon=True).start()
+
+    # Receive commands
+    buffer = ""
+    while True:
+        if not connected:
+            time.sleep(0.5)
+            continue
+        try:
+            data = sock.recv(1024)
+            if not data:
+                connected = False
+                print("[Client] DISCONNECTED from server, reconnecting...")
+                connect_to_server()
+                continue
             buffer += data.decode()
             while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                try:
-                    log_entry = json.loads(line)
-                    # Avoid duplicate message keys
-                    entry_data = log_entry.copy()
-                    entry_data["client_message"] = entry_data.pop("message", "")
-                    server_logger.info("Client log", **entry_data)
-                    server_logger.flush()
-                except json.JSONDecodeError:
-                    print(f"[Server] Invalid JSON: {line}")
-
-    except Exception as e:
-        print(f"[Server] Error: {e}")
-    finally:
-        conn.close()
-        clients.remove(conn)
-        print(f"[Server] Connection closed {addr}")
-
-# Command sender thread
-def command_sender():
-    while True:
-        cmd = input("[Server Command] START / STOP / EXIT: ").strip().upper()
-        if cmd not in ["START", "STOP", "EXIT"]:
-            print("Invalid command")
-            continue
-        for c in clients:
-            try:
-                c.sendall((cmd + "\n").encode())
-            except:
-                pass
-        if cmd == "EXIT":
-            print("Shutting down server...")
-            break
-
-def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("", SERVER_PORT))
-    sock.listen()
-    print(f"[Server] Listening on port {SERVER_PORT}")
-
-    threading.Thread(target=command_sender, daemon=True).start()
-
-    try:
-        while True:
-            conn, addr = sock.accept()
-            threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
-    except KeyboardInterrupt:
-        print("Server stopped")
-    finally:
-        sock.close()
-        server_logger.flush()
+                cmd, buffer = buffer.split("\n", 1)
+                cmd = cmd.strip().upper()
+                print(f"[Client] Command received: {cmd}")
+                if cmd == "START":
+                    if not vehicle.running:
+                        threading.Thread(target=vehicle.drive, daemon=True).start()
+                elif cmd == "STOP":
+                    vehicle.running = False
+                elif cmd == "EXIT":
+                    vehicle.running = False
+                    sock.close()
+                    return
+        except Exception as e:
+            connected = False
+            print(f"[Client] Network error: {e}, reconnecting...")
+            connect_to_server()
 
 if __name__ == "__main__":
-    main()
+    network_thread()

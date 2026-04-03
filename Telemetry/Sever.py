@@ -1,59 +1,60 @@
 import socket
 import threading
 import json
+import sys
+
+sys.path.append(r'C:\Users\user_\OneDrive\Documents\Intelligent-Vehicle-Navigation')
 from LOG.Logger import IndustrialLogger
 
 SERVER_PORT = 9999
 server_logger = IndustrialLogger("Server_Log.json")
+clients = {}  # addr -> socket
 
-# Connected clients
-clients = []
+lock = threading.Lock()
 
 def handle_client(conn, addr):
-    print(f"[Server] Connected by {addr}")
-    clients.append(conn)
-    buffer = ""
+    print(f"[Server] CONNECTED: {addr}")
+    with lock:
+        clients[addr] = conn
 
+    buffer = ""
     try:
         while True:
             data = conn.recv(1024)
             if not data:
                 break
-
             buffer += data.decode()
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
                 try:
                     log_entry = json.loads(line)
-                    # Avoid duplicate message keys
-                    entry_data = log_entry.copy()
-                    entry_data["client_message"] = entry_data.pop("message", "")
-                    server_logger.info("Client log", **entry_data)
+                    log_entry["client"] = str(addr)
+                    server_logger.info("Client log", **log_entry)
                     server_logger.flush()
                 except json.JSONDecodeError:
-                    print(f"[Server] Invalid JSON: {line}")
-
+                    print(f"[Server] Invalid JSON from {addr}: {line}")
     except Exception as e:
-        print(f"[Server] Error: {e}")
+        print(f"[Server] Error with {addr}: {e}")
     finally:
         conn.close()
-        clients.remove(conn)
-        print(f"[Server] Connection closed {addr}")
+        with lock:
+            clients.pop(addr, None)
+        print(f"[Server] DISCONNECTED: {addr}")
 
-# Command sender thread
 def command_sender():
     while True:
         cmd = input("[Server Command] START / STOP / EXIT: ").strip().upper()
         if cmd not in ["START", "STOP", "EXIT"]:
             print("Invalid command")
             continue
-        for c in clients:
-            try:
-                c.sendall((cmd + "\n").encode())
-            except:
-                pass
+        with lock:
+            for addr, c in list(clients.items()):
+                try:
+                    c.sendall((cmd + "\n").encode())
+                except:
+                    print(f"[Server] Failed to send to {addr}")
         if cmd == "EXIT":
-            print("Shutting down server...")
+            print("Server shutting down...")
             break
 
 def main():

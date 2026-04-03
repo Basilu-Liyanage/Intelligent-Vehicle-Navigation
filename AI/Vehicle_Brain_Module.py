@@ -1,51 +1,110 @@
-import torch
+import sys
 import time
-from Hardware.Lidar_Sensor import TFLuna
+
+sys.path.append('/home/pi/Desktop/Intelligent-Vehicle-Navigation')
+
 from Hardware.PCA_Board import PCA9685
+from Hardware.Lidar_Sensor import TFLuna
+from Hardware.DC_Motor import DCMotor
 from Hardware.Units.CarSteering import SteeringController
-from Hardware.DC_Motor import DCMotor, MotorDirection
 
-# Load TorchScript SAC model
-model = torch.jit.load("/home/pi/Desktop/Intelligent-Vehicle-Navigation/AI/sac_model_ts.pt")
-model.eval()
+# ================= CONFIG =================
+FRONT_CLEAR = 80         # cm, distance to drive straight
+FRONT_STOP = 25          # cm, emergency stop
+MAX_SPEED = 100           # max speed %
+MIN_SPEED = 20
+EYE_CHANNEL = 1
+CENTER_EYE_ANGLE = 125
+SCAN_RANGE = [90, 80, 100, 70, 110]  # angles to scan left/right around front
 
-# Initialize hardware
-lidar = TFLuna()
+# ================= INIT =================
 pca = PCA9685()
-steering = SteeringController(pca, servo_channel=0, min_angle=0, max_angle=60)
 motor = DCMotor(rpwm_pin=4, lpwm_pin=17, ren_pin=27, len_pin=22)
+steering = SteeringController(pca, servo_channel=0, min_angle=0, max_angle=60)
+lidar = TFLuna()
 
-# Constants
-SAFE_DISTANCE = 30.0  # cm
-MAX_SPEED = 50        # percent
-MIN_SPEED = 20        # percent
+# Center LiDAR
+pca.channel_map[EYE_CHANNEL].rotate(CENTER_EYE_ANGLE)
+steering.center()
+last_steering = 35
 
-def get_observation():
-    # Front distance only for now
-    return torch.tensor([lidar.read_distance()], dtype=torch.float32)
+# ================= FUNCTIONS =================
+def read_front():
+    return lidar.read_distance()
 
+def adaptive_speed(distance):
+    if distance > FRONT_CLEAR:
+        return MAX_SPEED
+    elif distance < FRONT_STOP:
+        return 0
+    else:
+        # Linear speed scaling
+        return int(MIN_SPEED + (distance - FRONT_STOP) / (FRONT_CLEAR - FRONT_STOP) * (MAX_SPEED - MIN_SPEED))
+
+def weighted_steering():
+    """Scan around front, return proportional steering angle"""
+    left_sum = 0
+    right_sum = 0
+    left_count = 0
+    right_count = 0
+
+    for angle in SCAN_RANGE:
+        pca.channel_map[EYE_CHANNEL].rotate(angle)
+        time.sleep(0.03)
+        dist = lidar.read_distance()
+
+        if angle < CENTER_EYE_ANGLE:
+            left_sum += dist
+            left_count += 1
+        else:
+            right_sum += dist
+            right_count += 1
+
+    # Center LiDAR
+    pca.channel_map[EYE_CHANNEL].rotate(CENTER_EYE_ANGLE)
+
+    # Average distances
+    left_avg = left_sum / left_count if left_count else 0
+    right_avg = right_sum / right_count if right_count else 0
+
+    # Proportional steering: 0=left, 60=right
+    if left_avg + right_avg == 0:
+        return 35
+    steering_angle = 35 + int((right_avg - left_avg) / (left_avg + right_avg) * 25)
+    steering_angle = max(0, min(60, steering_angle))
+    return steering_angle
+
+# ================= MAIN LOOP =================
 try:
     while True:
-        obs = get_observation()
-        with torch.no_grad():
-            action = model(obs)  # SAC output: tensor([steering, speed])
-            steering_angle = float(action[0].item())
-            target_speed = float(action[1].item())
-
-        # Clamp and apply
-        steering_angle = max(0, min(60, steering_angle))
-        target_speed = max(MIN_SPEED, min(MAX_SPEED, target_speed))
-
-        # Apply steering and speed
-        steering.set_angle(steering_angle)
-
-        if lidar.read_distance() < SAFE_DISTANCE:
+        front = read_front()
+        if front <= FRONT_STOP:
+            print(f"🚨 Emergency stop! Front obstacle {front}cm")
             motor.stop(brake=True)
-        else:
-            motor.move_forward(target_speed)
+            steering.center()
+            last_steering = 35
+            while read_front() <= FRONT_STOP:
+                time.sleep(0.05)
+            continue
 
-        time.sleep(0.05)  # fast loop
+        speed = adaptive_speed(front)
+        motor.move_forward(speed)
+
+        if front > FRONT_CLEAR:
+            steering.center()
+            last_steering = 35
+        else:
+            angle = weighted_steering()
+            steering.set_angle(angle)
+            last_steering = angle
+
+        time.sleep(0.03)
 
 except KeyboardInterrupt:
-    motor.emergency_stop()
-    print("Stopped")
+    print("\nStopping vehicle")
+finally:
+    motor.stop(brake=True)
+    steering.center()
+    pca.channel_map[EYE_CHANNEL].rotate(CENTER_EYE_ANGLE)
+    motor.cleanup()
+    print("Vehicle safely stopped")

@@ -40,26 +40,46 @@ class Vehicle_Brain_Module:
         self.target_speed = 0
         self.distance_center = 0.0
 
-        # Turn timing
-        self.turn_start_time = 0
-        self.turn_duration = 0.0  # Will calculate dynamically
+    # ================= SMOOTH SPEED =================
+    def apply_smooth_speed(self):
+        """Smooth acceleration + deceleration"""
 
+        ACCEL_STEP = 6
+        DECEL_STEP = 10
+
+        # Reduce speed while turning
+        effective_target = self.target_speed
+        if self.turning:
+            effective_target = min(self.target_speed, 40)
+
+        # Smooth ramp
+        if self.current_speed < effective_target:
+            self.current_speed += ACCEL_STEP
+        elif self.current_speed > effective_target:
+            self.current_speed -= DECEL_STEP
+
+        # Clamp
+        self.current_speed = max(0, min(100, self.current_speed))
+
+        # Apply
+        if self.current_speed > 0:
+            self.CarEngine.move_forward(self.current_speed)
+        else:
+            self.CarEngine.stop()
+
+    # ================= STEERING =================
     def center_wheels(self):
-        """Force wheels to center position"""
-        self.CarSteering.set_angle(self.STEERING_CENTER_SERVO)
-        time.sleep(0.15)
         self.CarSteering.set_angle(self.STEERING_CENTER_SERVO)
         time.sleep(0.1)
 
     def set_wheels_turned(self, driver_angle):
-        """Turn wheels to specific angle"""
         self.CarSteering.set_angle(driver_angle)
-        time.sleep(0.15)
+        time.sleep(0.1)
 
+    # ================= SPEED CONTROL =================
     def smart_speed_control(self):
-        """Control speed based on center distance"""
         self.CarEye.set_servo(self.eye_center_angle)
-        time.sleep(0.05)
+        time.sleep(0.03)
 
         self.distance_center = self.LiDAR.read_distance()
 
@@ -74,33 +94,30 @@ class Vehicle_Brain_Module:
 
         return self.distance_center
 
+    # ================= ANGLE CONVERSION =================
     def eye_to_steering(self, eye_angle):
-        """Convert eye angle to steering angle"""
         if eye_angle <= 125:
             driver_angle = 35 + (125 - eye_angle) / 3
         else:
             driver_angle = 35 - (eye_angle - 125) * 7 / 15
 
-        driver_angle = max(0, min(60, driver_angle))
-        return round(driver_angle, 2)
+        return max(0, min(60, driver_angle))
 
-    def estimate_turn_duration(self, driver_angle, speed_percent):
-        """Dynamic turn duration based on angle and speed"""
+    def estimate_turn_duration(self, driver_angle):
         angle_diff = abs(driver_angle - self.driver_center_angle)
-        speed_factor = max(10, speed_percent)
-        duration = (angle_diff / 60.0) * (50.0 / speed_factor) + 0.6
-        return round(duration, 2)
+        duration = 0.5 + (angle_diff / 60.0) * 1.5
+        return duration
 
+    # ================= REVERSE =================
     def reverse_until_clear(self):
-        """Reverse with straight wheels"""
         self.center_wheels()
         self.reversing = True
-        self.CarEngine.move_reverse(45)
+        self.CarEngine.move_reverse(40)
 
-        reverse_start = time.time()
-        while time.time() - reverse_start < 2.5:
-            distance = self.LiDAR.read_distance()
-            if distance > self.MINIMUM_GAP * 1.5:
+        start = time.time()
+        while time.time() - start < 2:
+            d = self.LiDAR.read_distance()
+            if d > self.MINIMUM_GAP * 1.5:
                 break
             time.sleep(0.05)
 
@@ -108,91 +125,79 @@ class Vehicle_Brain_Module:
         self.center_wheels()
         self.reversing = False
 
-    def execute_turn_and_straighten(self, best_angle, best_distance):
-        """Turn, drive, then straighten wheels"""
+    # ================= TURN =================
+    def execute_turn(self, best_angle, best_distance):
         driver_angle = self.eye_to_steering(best_angle)
-        self.turn_duration = self.estimate_turn_duration(driver_angle, self.current_speed)
+        turn_time = self.estimate_turn_duration(driver_angle)
 
-        # Determine turn direction
-        if best_angle > 125:
-            direction = "RIGHT"
-        elif best_angle < 125:
-            direction = "LEFT"
-        else:
-            direction = "STRAIGHT"
-
-        # Stop before turn
-        self.CarEngine.stop()
-        time.sleep(0.1)
+        print(f"Turning → Eye {best_angle} → Driver {driver_angle}")
 
         # Turn wheels
         self.set_wheels_turned(driver_angle)
 
-        # Move forward through turn slowly
-        self.CarEngine.move_forward(max(30, self.current_speed // 2))
-        turn_start = time.time()
-        while time.time() - turn_start < self.turn_duration:
+        # Move while turning (IMPORTANT FIX)
+        self.current_speed = 30
+        self.CarEngine.move_forward(30)
+
+        start = time.time()
+        while time.time() - start < turn_time:
             time.sleep(0.05)
 
-        # Stop and straighten
-        self.CarEngine.stop()
+        # Straighten
         self.center_wheels()
-        time.sleep(0.1)
         self.turning = False
 
+    # ================= MAIN LOOP =================
     def drive(self):
-        """Main driving loop"""
         try:
             self.running = True
             self.center_wheels()
 
             while self.running:
-                center_distance = self.smart_speed_control()
+                dist = self.smart_speed_control()
 
-                # Forward motion if not turning or reversing
-                if self.target_speed > 0 and not self.turning and not self.reversing:
-                    self.CarEngine.move_forward(self.target_speed)
-                    self.current_speed = self.target_speed
+                # NORMAL DRIVING
+                if not self.turning and not self.reversing:
+                    self.apply_smooth_speed()
 
-                elif self.target_speed == 0 and not self.turning and not self.reversing:
+                # OBSTACLE DETECTED
+                if dist < self.MINIMUM_GAP and not self.turning and not self.reversing:
+                    print(f"\n🛑 Obstacle at {dist:.1f}cm")
+
                     self.CarEngine.stop()
-                    if center_distance < self.MINIMUM_GAP:
-                        self.reverse_until_clear()
-                        best_angle, best_distance = self.CarEye.scan_row()
+                    self.current_speed = 0
 
-                        if best_distance > self.MINIMUM_GAP:
-                            self.turning = True
-                            self.execute_turn_and_straighten(best_angle, best_distance)
-                        else:
-                            self.CarEngine.move_reverse(50)
-                            time.sleep(1.5)
-                            self.CarEngine.stop()
-                            self.center_wheels()
-                            self.reversing = False
+                    self.reverse_until_clear()
 
-                time.sleep(0.05)
+                    best_angle, best_distance = self.CarEye.scan_row()
+
+                    if best_distance > self.MINIMUM_GAP:
+                        self.turning = True
+                        self.execute_turn(best_angle, best_distance)
+                    else:
+                        print("❌ No path, reversing more")
+                        self.CarEngine.move_reverse(50)
+                        time.sleep(1.5)
+                        self.CarEngine.stop()
+                        self.center_wheels()
+
+                time.sleep(0.03)  # FASTER LOOP (important)
 
         except KeyboardInterrupt:
             print("\nStopped by user")
-        except Exception as e:
-            print(f"\nError: {e}")
         finally:
             self.stop()
 
+    # ================= STOP =================
     def stop(self):
-        """Emergency stop - guarantee straight wheels"""
         self.CarEngine.stop()
-        for _ in range(3):
+        self.current_speed = 0
+        for _ in range(2):
             self.CarSteering.set_angle(self.STEERING_CENTER_SERVO)
-            time.sleep(0.1)
+            time.sleep(0.05)
         self.CarEye.set_servo(self.eye_center_angle)
 
 
 if __name__ == "__main__":
     vehicle_brain = Vehicle_Brain_Module()
-    try:
-        vehicle_brain.drive()
-    except KeyboardInterrupt:
-        print("\nDemo terminated")
-    finally:
-        vehicle_brain.stop()
+    vehicle_brain.drive()
